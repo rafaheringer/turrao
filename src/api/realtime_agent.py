@@ -6,22 +6,21 @@ permitindo conversação bidirecional de voz em tempo real.
 """
 
 import asyncio
-import json
-import os
-import time
-import traceback
 import base64
+import os
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+import json
+import threading
+import time
+from typing import Any, Callable, Dict, Optional
+import numpy as np
 
-import openai
 from openai import AsyncOpenAI
 
 from src.utils.logger import get_logger
 
-# Forçar o nível de log para DEBUG
 logger = get_logger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG)  # Aumentar o nível de log para DEBUG
 
 
 class RealtimeAgent:
@@ -38,23 +37,7 @@ class RealtimeAgent:
         
         Args:
             config: Dicionário com configurações para a API
-            
-        Raises:
-            ImportError: Se o SDK do OpenAI não estiver na versão adequada
-            ValueError: Se a chave de API não estiver configurada
         """
-        # Verificar versão do OpenAI SDK (a API Realtime exige a versão recente)
-        try:
-            # Tentar criar uma instância do cliente com beta.realtime
-            client = AsyncOpenAI()
-            # Verificar se o atributo beta.realtime existe
-            if not hasattr(client, 'beta') or not hasattr(client.beta, 'realtime'):
-                logger.critical("SDK do OpenAI não possui suporte para API Realtime (beta.realtime)")
-                raise ImportError("SDK do OpenAI precisa ser da versão que suporta a API Realtime")
-        except Exception as e:
-            logger.critical(f"Erro ao verificar suporte para API Realtime: {e}")
-            raise ImportError(f"Erro ao inicializar cliente com suporte à API Realtime: {e}")
-        
         self.config = config
         
         # Obter a chave de API
@@ -63,295 +46,413 @@ class RealtimeAgent:
             logger.critical("Chave de API do OpenAI não configurada")
             raise ValueError("Chave de API do OpenAI é necessária. Configure via OPENAI_API_KEY ou no arquivo de configuração.")
         
-        # Exibir os primeiros caracteres da API key (para debug)
-        if self.api_key and len(self.api_key) > 8:
-            masked_key = self.api_key[:4] + "..." + self.api_key[-4:]
-            logger.debug(f"API Key configurada: {masked_key}")
-        else:
-            logger.warning("API Key parece estar em formato inválido")
-        
         # Configurações do modelo e voz
-        # Obter o modelo da configuração, com fallback para a variável de ambiente ou valor padrão
         self.model = config.get("model") or os.environ.get("OPENAI_MODEL") or "gpt-4o-realtime-preview"
         self.voice = config.get("voice", "alloy")
         self.personality_prompt = config.get("personality_prompt", 
-                                            "Você é o Turrão, um assistente com personalidade forte, irreverente e humor ácido. " +
-                                            "Seja teimoso e responda com sarcasmo e ironia, mantendo um tom assertivo mas sempre com humor picante.")
+                                          "Você é o Turrão, um assistente com personalidade forte, irreverente e humor ácido. " +
+                                          "Seja teimoso e responda com sarcasmo e ironia, mantendo um tom assertivo mas sempre com humor picante.")
         
         # Inicializar cliente assíncrono
         self.client = AsyncOpenAI(api_key=self.api_key)
         
+        # Configuração de áudio
+        self.audio_format = config.get("audio_format", "pcm16")
+        self.sample_rate = config.get("sample_rate", 16000)
+        self.channels = config.get("channels", 1)
+        self.output_channels = config.get("output_channels", 1)  # Canais para saída
+        
+        # Limites de detecção de voz
+        self.voice_threshold = config.get("voice_threshold", 0.02)  # Limiar mais alto para evitar falsos positivos
+        self.activation_frames = config.get("activation_frames", 5)  # Mais frames para confirmar voz
+        self.noise_floor = config.get("noise_floor", 0.01)  # Nível de ruído de fundo a ser ignorado
+        self.consecutive_voice_frames = 0  # Contador para frames consecutivos com voz
+        
+        # Estado interno
+        self._is_listening = False
+        self._is_speaking = False
+        self._audio_buffer = bytearray()
+        self._stop_event = threading.Event()
+        self._connection = None
+        self._calibrating = True  # Iniciar com calibração de ruído ambiente
+        self._noise_calibration_samples = []
+        self._calibration_frames = 20  # Número de frames para calibração
+        
         logger.info(f"Agente Realtime inicializado com modelo {self.model} e voz {self.voice}")
     
-    async def start_conversation(self, 
-                                audio_input_stream, 
-                                audio_output_stream,
-                                on_speech_recognized: Optional[Callable[[str], None]] = None,
-                                on_response_started: Optional[Callable[[], None]] = None,
-                                on_response_text: Optional[Callable[[str], None]] = None,
-                                on_completion: Optional[Callable[[], None]] = None):
+    async def handle_message(self, message, audio_output_callback=None, text_callback=None):
         """
-        Inicia uma conversação de voz em tempo real.
+        Processa mensagens recebidas da API Realtime.
         
         Args:
-            audio_input_stream: Stream de áudio de entrada (do microfone)
-            audio_output_stream: Stream de áudio de saída (para os alto-falantes)
-            on_speech_recognized: Callback executado quando a fala é reconhecida
-            on_response_started: Callback executado quando a resposta começa
-            on_response_text: Callback executado para cada trecho de texto da resposta
-            on_completion: Callback executado quando a conversação é concluída
+            message: Mensagem recebida da API
+            audio_output_callback: Função para processar áudio de saída
+            text_callback: Função para processar texto de saída
+        """
+        event_type = message.get('type')
+        logger.debug(f"Recebido evento: {event_type}")
+        
+        if event_type == "response.audio.delta" and 'delta' in message:
+            # Processar delta de áudio
+            audio_content = base64.b64decode(message['delta'])
+            logger.debug(f"Recebido delta de áudio: {len(audio_content)} bytes")
             
-        Raises:
-            RuntimeError: Se ocorrer erro durante a comunicação com a API
+            if audio_output_callback:
+                # Adaptar o formato de áudio se necessário antes de enviar para callback
+                processed_audio = self._process_output_audio(audio_content)
+                await audio_output_callback(processed_audio)
+        
+        elif event_type == "response.text.delta" and 'delta' in message:
+            # Processar delta de texto
+            text = message['delta']
+            logger.debug(f"Recebido delta de texto: {text}")
+            
+            if text_callback:
+                await text_callback(text)
+        
+        elif event_type == "response.done":
+            logger.info("Resposta concluída")
+            self._is_speaking = False
+            
+        elif event_type == "input_audio_buffer.speech_started":
+            logger.info("Detecção de fala: usuário começou a falar")
+            
+        elif event_type == "input_audio_buffer.speech_stopped":
+            logger.info("Detecção de fala: usuário parou de falar")
+    
+    def _process_output_audio(self, audio_bytes):
+        """
+        Processa o áudio de saída para garantir compatibilidade com o sistema de reprodução.
+        
+        Args:
+            audio_bytes: Bytes de áudio para processar
+            
+        Returns:
+            bytes: Áudio processado pronto para reprodução
         """
         try:
-            # Mostra informações da SDK para debug
-            logger.debug(f"OpenAI SDK versão: {openai.__version__}")
-            logger.debug(f"Atributos disponíveis em AsyncOpenAI: {dir(self.client)}")
-            logger.debug(f"Atributos disponíveis em beta: {dir(self.client.beta) if hasattr(self.client, 'beta') else 'beta não disponível'}")
+            # Converter bytes para array numpy
+            if self.audio_format == "pcm16":
+                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+            else:
+                audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
             
-            logger.info("Iniciando conversação em tempo real")
-            
-            # Usar a API beta.realtime
-            logger.debug("Conectando à API Realtime")
-            async with self.client.beta.realtime.connect(model=self.model) as connection:
-                logger.debug("Conexão estabelecida!")
+            # Verificar se precisamos adaptar os canais
+            if self.output_channels > 1 and audio_array.ndim == 1:
+                # Converter mono para estéreo/multicanal
+                # Repetir o mesmo áudio em todos os canais
+                audio_array = np.tile(audio_array.reshape(-1, 1), (1, self.output_channels))
                 
-                # Configurar a sessão com prompt e modalidades para áudio
-                logger.debug("Atualizando configuração da sessão")
+                # Converter de volta para bytes
+                if self.audio_format == "pcm16":
+                    return audio_array.astype(np.int16).tobytes()
+                else:
+                    return audio_array.astype(np.float32).tobytes()
+            
+            # Se não precisar adaptar, retornar o áudio original
+            return audio_bytes
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar áudio de saída: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return audio_bytes  # Em caso de erro, retorna o áudio original
+    
+    async def detect_voice(self, audio_chunk):
+        """
+        Detecta se há voz no áudio.
+        
+        Args:
+            audio_chunk: Bytes de áudio para analisar
+            
+        Returns:
+            bool: True se voz foi detectada, False caso contrário
+        """
+        try:
+            if not audio_chunk or len(audio_chunk) < 2:
+                return False
+            
+            # Determinamos o formato com base no tipo de áudio configurado
+            dtype = np.int16 if self.audio_format == "pcm16" else np.float32
+            
+            # Converter para array numpy para análise
+            audio_array = np.frombuffer(audio_chunk, dtype=dtype)
+            
+            # Normalizar para float para cálculo de RMS se for int16
+            if dtype == np.int16:
+                float_array = audio_array.astype(np.float32) / 32768.0
+                rms = np.sqrt(np.mean(np.square(float_array)))
+            else:
+                rms = np.sqrt(np.mean(np.square(audio_array)))
+            
+            # Calibração de ruído de fundo - ajusta automaticamente o threshold
+            if self._calibrating:
+                self._noise_calibration_samples.append(rms)
+                
+                if len(self._noise_calibration_samples) >= self._calibration_frames:
+                    # Calcular estatísticas do ruído de fundo
+                    noise_mean = np.mean(self._noise_calibration_samples)
+                    noise_std = np.std(self._noise_calibration_samples)
+                    
+                    # Ajustar o threshold baseado no ruído ambiente (média + 3*desvio padrão)
+                    adjusted_threshold = noise_mean + 3 * noise_std
+                    
+                    # Não deixar o threshold ser menor que o mínimo configurado
+                    self.noise_floor = max(noise_mean, self.noise_floor)
+                    self.voice_threshold = max(adjusted_threshold, self.voice_threshold)
+                    
+                    logger.info(f"Calibração concluída. Ruído ambiente: {noise_mean:.6f} ± {noise_std:.6f}")
+                    logger.info(f"Threshold ajustado: {self.voice_threshold:.6f}")
+                    
+                    self._calibrating = False
+                
+                return False  # Não detectar voz durante calibração
+            
+            # Verificar se o áudio tem amplitude suficiente para ser considerado voz
+            has_signal = rms > self.noise_floor
+            has_voice = rms > self.voice_threshold
+            
+            if has_voice:
+                self.consecutive_voice_frames += 1
+                if self.consecutive_voice_frames >= 2:  # Exigir pelo menos 2 frames consecutivos para log
+                    logger.debug(f"Voz detectada! RMS={rms:.6f}, threshold={self.voice_threshold}")
+            else:
+                self.consecutive_voice_frames = 0
+                
+                # Mostrar log para sinais acima do ruído mas abaixo do threshold
+                if has_signal and not has_voice:
+                    logger.debug(f"Sinal detectado, mas abaixo do threshold. RMS={rms:.6f}")
+            
+            # Retornar true apenas quando tiver confirmação de voz
+            return has_voice
+            
+        except Exception as e:
+            logger.error(f"Erro ao detectar voz: {e}")
+            return False
+    
+    async def send_audio(self, connection, audio_chunk):
+        """
+        Envia um chunk de áudio para a API Realtime.
+        
+        Args:
+            connection: Conexão WebSocket com a API
+            audio_chunk: Bytes de áudio para enviar
+        """
+        try:
+            if not connection or not audio_chunk or len(audio_chunk) < 2:
+                return
+            
+            # Codificar o áudio em Base64
+            base64_audio = base64.b64encode(audio_chunk).decode('ascii')
+            
+            # Enviar para a API
+            await connection.send({
+                "type": "input_audio_buffer.append",
+                "audio": base64_audio
+            })
+            
+            # Atualizar buffer para enviar acumulado
+            self._audio_buffer.extend(audio_chunk)
+            
+            logger.debug(f"Enviado chunk de áudio: {len(audio_chunk)} bytes")
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar áudio: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    async def process_audio_stream(self, connection, audio_input_stream):
+        """
+        Processa continuamente o stream de áudio, detectando voz e enviando para a API.
+        
+        Args:
+            connection: Conexão WebSocket com a API
+            audio_input_stream: Stream de áudio do microfone
+        """
+        self._is_listening = True
+        activation_counter = 0
+        chunk_counter = 0
+        
+        logger.info("Iniciando monitoramento de áudio do microfone")
+        logger.info("Calibrando níveis de ruído ambiente... aguarde")
+        
+        # Inicialmente não enviamos nada, apenas monitoramos a ativação por voz
+        while self._is_listening and not self._stop_event.is_set():
+            try:
+                # Ler dados do stream de áudio (chunks menores para detecção mais rápida)
+                audio_chunk = await audio_input_stream.read(1024)
+                
+                # Detectar voz no áudio
+                has_voice = await self.detect_voice(audio_chunk)
+                
+                # Se detectou voz, incrementa contador de ativação
+                if has_voice:
+                    activation_counter += 1
+                    if activation_counter == 2:  # Reduzimos o log para não poluir tanto
+                        logger.info("Possível voz detectada, monitorando...")
+                    
+                    # Enviar o áudio assim que detectar voz
+                    await self.send_audio(connection, audio_chunk)
+                    
+                    # Se atingir o limite de frames com voz, solicita resposta
+                    if activation_counter >= self.activation_frames and not self._is_speaking:
+                        logger.info(f"Voz confirmada após {activation_counter} frames! Enviando áudio para a API")
+                        self._is_speaking = True
+                        
+                        # Solicitar resposta da API (não fazemos commit porque queremos manter o stream aberto)
+                        await connection.send({"type": "response.create"})
+                else:
+                    # Enviar áudio mesmo sem voz, se estiver em uma conversa ativa
+                    if self._is_speaking:
+                        await self.send_audio(connection, audio_chunk)
+                    
+                    # Resetar contador de ativação gradualmente
+                    if activation_counter > 0:
+                        activation_counter -= 0.2  # Decrementar gradualmente para evitar cortes em pausas curtas
+                
+                # Contador de chunks processados (para debug)
+                chunk_counter += 1
+                if chunk_counter % 200 == 0:  # Reduzido a frequência para não logar tanto
+                    logger.debug(f"Processados {chunk_counter} chunks de áudio")
+                
+                # Pausa curta para não sobrecarregar
+                await asyncio.sleep(0.01)
+                
+            except Exception as e:
+                logger.error(f"Erro ao processar áudio de entrada: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                await asyncio.sleep(0.1)  # Pausa mais longa em caso de erro
+    
+    async def start_conversation(self,
+                               audio_input_stream,
+                               audio_output_stream=None,
+                               on_speech_recognized=None,
+                               on_response_started=None,
+                               on_response_text=None,
+                               on_completion=None):
+        """
+        Inicia uma conversa com a API Realtime.
+        
+        Args:
+            audio_input_stream: Stream de áudio do microfone
+            audio_output_stream: Stream de áudio de saída (opcional)
+            on_speech_recognized: Callback quando a fala é reconhecida
+            on_response_started: Callback quando a resposta começa
+            on_response_text: Callback para cada trecho de texto da resposta
+            on_completion: Callback quando a conversação é concluída
+        """
+        self._stop_event.clear()
+        
+        # Definir callbacks locais
+        async def text_callback(text):
+            if on_response_text:
+                await asyncio.to_thread(on_response_text, text)
+        
+        async def audio_callback(audio_data):
+            try:
+                if audio_output_stream:
+                    await audio_output_stream.write(audio_data)
+            except Exception as e:
+                logger.error(f"Erro ao reproduzir áudio: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        try:
+            # Conectar à API Realtime
+            logger.info(f"Conectando à API Realtime com modelo {self.model}")
+            
+            async with self.client.beta.realtime.connect(model=self.model) as connection:
+                self._connection = connection
+                logger.info("Conexão estabelecida!")
+                
+                # Notificar início da sessão
+                if on_response_started:
+                    await asyncio.to_thread(on_response_started)
+                
+                # Configurar a sessão
                 await connection.session.update(session={
-                    'modalities': ['audio', 'text'],  # IMPORTANTE: Habilitar voz e texto
-                    'instructions': self.personality_prompt,  # Parâmetro correto conforme API
-                    'voice': self.voice,  # Definir a voz para saída de áudio
-                    # Configuração de detecção de turnos de fala
+                    'modalities': ['audio', 'text'],
+                    'instructions': self.personality_prompt,
+                    'voice': self.voice,
+                    'output_audio_format': self.audio_format,
                     'turn_detection': {
-                        'type': 'server_vad',  # Voice Activity Detection
-                        'silence_duration_ms': 1000,  # Tempo de silêncio para determinar fim da fala
-                        'interrupt_response': True  # Permitir interrupção do assistente
+                        'type': 'server_vad',
+                        'silence_duration_ms': 1000,  # 1 segundo de silêncio
+                        'interrupt_response': True
                     }
                 })
-                logger.debug("Sessão configurada com sucesso")
+                logger.info("Sessão configurada")
                 
-                # Definir uma função para capturar eventos
-                event_count = 0
-                text_response = ""  # Armazenar a resposta completa
+                # Iniciar task para processar o áudio
+                processing_task = asyncio.create_task(
+                    self.process_audio_stream(connection, audio_input_stream)
+                )
                 
-                async def process_events():
-                    nonlocal event_count, text_response
-                    logger.debug("Iniciando captura de eventos")
-                    
-                    try:
-                        async for event in connection:
-                            event_count += 1
-                            logger.debug(f"Evento #{event_count} recebido: {event.type}")
-                            
-                            # Mostrar todos os atributos do evento (para debug)
-                            event_attrs = {}
-                            for attr in dir(event):
-                                if not attr.startswith('_') and not callable(getattr(event, attr)):
-                                    try:
-                                        value = getattr(event, attr)
-                                        event_attrs[attr] = str(value)
-                                    except:
-                                        event_attrs[attr] = "Não pôde ser acessado"
-                            
-                            logger.debug(f"Atributos do evento: {json.dumps(event_attrs, indent=2)}")
-                            
-                            # Eventos de VAD (Voice Activity Detection)
-                            if event.type == "input_audio_buffer.speech_started":
-                                logger.debug("Detecção de fala: Usuário começou a falar")
-                            
-                            elif event.type == "input_audio_buffer.speech_stopped":
-                                logger.debug("Detecção de fala: Usuário parou de falar")
-                            
-                            # Eventos de reconhecimento de fala
-                            elif event.type == "voice_to_text.message.content" and hasattr(event, 'content'):
-                                if hasattr(event.content, 'text'):
-                                    text = event.content.text
-                                    logger.debug(f"Texto reconhecido: {text}")
-                                    if on_speech_recognized:
-                                        await asyncio.to_thread(on_speech_recognized, text)
-                            
-                            # Eventos de início de resposta
-                            elif event.type == "response.start":
-                                logger.debug("Resposta iniciada")
-                                if on_response_started:
-                                    await asyncio.to_thread(on_response_started)
-                            
-                            # Eventos de delta de texto
-                            elif event.type == "response.text.delta" and hasattr(event, 'delta'):
-                                text = event.delta
-                                text_response += text  # Acumular resposta
-                                logger.debug(f"TEXTO: {text}")
-                                if on_response_text:
-                                    # Chamar o callback assincronamente
-                                    await asyncio.to_thread(on_response_text, text)
-                            
-                            # Eventos de chunks de áudio
-                            elif event.type == "text_to_voice.chunk" and hasattr(event, 'chunk'):
-                                logger.debug("Recebido chunk de áudio")
-                                if audio_output_stream:
-                                    # Escrever diretamente no stream de saída
-                                    await audio_output_stream.write(event.chunk)
-                            
-                            # Finalização de resposta
-                            elif event.type == "response.done":
-                                logger.debug(f"Resposta concluída: {text_response}")
-                                break
-                                
-                    except Exception as e:
-                        logger.error(f"Erro ao processar eventos: {e}")
-                        logger.error(traceback.format_exc())
-                
-                # Iniciar tarefa para capturar eventos
-                logger.debug("Criando tarefa para processar eventos")
-                event_task = asyncio.create_task(process_events())
-                
+                # Processar eventos de resposta
                 try:
-                    # Configurar streaming de áudio bidirecional
-                    logger.debug("Configurando streams de áudio")
-                    
-                    # Função para converter e codificar áudio em Base64 (formato PCM16)
-                    def encode_audio_to_base64(audio_chunk):
-                        import base64
-                        import struct
+                    async for event in connection:
+                        # Convertendo o evento para dicionário para processamento
+                        event_dict = {}
+                        for attr in dir(event):
+                            if not attr.startswith('_') and not callable(getattr(event, attr)):
+                                try:
+                                    event_dict[attr] = getattr(event, attr)
+                                except:
+                                    pass
                         
-                        # Se o áudio já estiver em PCM16, apenas codificamos em Base64
-                        # Caso contrário, precisaríamos converter primeiro
-                        # (assumindo que o áudio de entrada já está em PCM16)
-                        return base64.b64encode(audio_chunk).decode('ascii')
-                    
-                    # Enviar áudio de entrada (do microfone) para a API
-                    async def stream_input_audio():
-                        logger.debug("Iniciando stream de áudio de entrada")
+                        # Reconhecimento de fala
+                        if event_dict.get('type') == "voice_to_text.message.content" and on_speech_recognized:
+                            if hasattr(event, 'content') and hasattr(event.content, 'text'):
+                                text = event.content.text
+                                await asyncio.to_thread(on_speech_recognized, text)
+                                logger.info(f"Fala reconhecida: {text}")
                         
-                        # Flag para controlar se estamos falando
-                        is_speaking = False
-                        silence_counter = 0
+                        # Processar o evento para áudio e texto
+                        await self.handle_message(
+                            event_dict, 
+                            audio_output_callback=audio_callback,
+                            text_callback=text_callback
+                        )
                         
-                        while True:
-                            try:
-                                # Ler dados do stream de áudio de entrada (já em PCM16)
-                                audio_chunk = await audio_input_stream.read(4096)  # Tamanho de chunk otimizado
-                                
-                                if not audio_chunk:
-                                    await asyncio.sleep(0.01)  # Pequena pausa para não consumir CPU
-                                    
-                                    # Incrementar contador de silêncio quando não há dados
-                                    if is_speaking:
-                                        silence_counter += 1
-                                        # Se silêncio por tempo suficiente, finalizar entrada
-                                        if silence_counter > 100:  # ~1 segundo de silêncio
-                                            logger.debug("Detectado fim da fala, finalizando entrada de áudio")
-                                            # Enviar evento de commit para finalizar a entrada de áudio
-                                            if hasattr(connection, 'send'):
-                                                logger.debug("Enviando commit de áudio")
-                                                await connection.send({
-                                                    "type": "input_audio_buffer.commit"
-                                                })
-                                                
-                                                # Aguardar um pouco para o processamento ocorrer
-                                                await asyncio.sleep(0.5)
-                                                
-                                                # Solicitar resposta
-                                                logger.debug("Solicitando resposta")
-                                                await connection.send({
-                                                    "type": "response.create"
-                                                })
-                                            elif hasattr(connection, 'conversation'):
-                                                # Tentativa alternativa usando conversation
-                                                await connection.conversation.completion.create()
-                                            is_speaking = False
-                                            silence_counter = 0
-                                    
-                                    continue
-                                
-                                # Resetar contador de silêncio quando há dados
-                                silence_counter = 0
-                                
-                                # Se ainda não estávamos falando, marcar que começamos
-                                if not is_speaking:
-                                    is_speaking = True
-                                    logger.debug("Detectado início da fala")
-                                
-                                # Codificar o áudio em Base64
-                                base64_audio = encode_audio_to_base64(audio_chunk)
-                                
-                                # Registrar o tamanho do áudio para debug
-                                logger.debug(f"Enviando chunk de áudio: {len(audio_chunk)} bytes")
-                                
-                                # Enviar chunk de áudio para a API usando o método correto
-                                if hasattr(connection, 'input_audio'):
-                                    # Tentativa usando input_audio
-                                    await connection.input_audio.send_chunk(audio_chunk)
-                                elif hasattr(connection, 'send_binary'):
-                                    # Tentativa usando send_binary diretamente
-                                    await connection.send_binary(audio_chunk)
-                                elif hasattr(connection, 'send'):
-                                    # Enviar o dicionário diretamente - não serializar para JSON
-                                    message = {
-                                        "type": "input_audio_buffer.append",
-                                        "audio": base64_audio
-                                    }
-                                    logger.debug(f"Enviando mensagem via send: objeto com tipo {message['type']}")
-                                    await connection.send(message)
-                                elif hasattr(connection, 'conversation'):
-                                    # Tentativa usando a API de conversa
-                                    await connection.conversation.item.create(
-                                        item={
-                                            "type": "audio",
-                                            "content": {
-                                                "audio": base64_audio
-                                            }
-                                        }
-                                    )
-                                else:
-                                    # Não encontramos método compatível
-                                    methods = [attr for attr in dir(connection) if not attr.startswith('_') and callable(getattr(connection, attr))]
-                                    logger.debug(f"Métodos disponíveis: {methods}")
-                                    logger.error("Não foi possível encontrar um método para enviar áudio")
-                            except Exception as e:
-                                logger.error(f"Erro ao processar áudio de entrada: {e}")
-                                logger.error(traceback.format_exc())
-                                break
-                    
-                    # Iniciar task para streaming de áudio de entrada
-                    input_stream_task = asyncio.create_task(stream_input_audio())
-                    
-                    # Aguardar pela tarefa de processamento de eventos
-                    logger.debug("Aguardando eventos de voz com timeout de 60 segundos")
-                    try:
-                        await asyncio.wait_for(event_task, timeout=60.0)
-                    except asyncio.TimeoutError:
-                        logger.debug("Timeout na espera por eventos")
-                    except Exception as e:
-                        logger.error(f"Erro durante processamento de eventos: {e}")
-                    finally:
-                        # Certificar-se de cancelar todas as tarefas
-                        if not input_stream_task.done():
-                            input_stream_task.cancel()
-                            logger.debug("Tarefa de streaming de entrada cancelada")
+                        # Verificar se devemos parar
+                        if self._stop_event.is_set():
+                            break
+                            
+                except Exception as e:
+                    logger.error(f"Erro ao processar eventos: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                finally:
+                    # Cancelar a task de processamento
+                    if not processing_task.done():
+                        processing_task.cancel()
                         try:
-                            await input_stream_task
+                            await processing_task
                         except asyncio.CancelledError:
                             pass
-                        if audio_output_stream:
-                            logger.debug("Finalizando stream de saída")
-                            # Não tenta fechar o stream, apenas registra que está finalizando
-                            # O stream será fechado pelo gerenciador de conversação
-                except Exception as e:
-                    logger.error(f"Erro na configuração de streaming de áudio: {e}")
-                    logger.error(traceback.format_exc())
-            
-            logger.info("Conversação em tempo real concluída")
-            
+        
+        except Exception as e:
+            logger.error(f"Erro na conversação: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        finally:
+            self._connection = None
+            self._stop_event.set()
+            self._is_speaking = False
+            # Executar callback de conclusão
             if on_completion:
                 await asyncio.to_thread(on_completion)
-                
-        except Exception as e:
-            logger.error(f"Erro geral na conversação em tempo real: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"Falha na API Realtime do OpenAI: {e}")
+    
+    def stop_listening(self):
+        """Interrompe a captura de áudio."""
+        self._is_listening = False
+    
+    def stop(self):
+        """Interrompe a conversação."""
+        self._stop_event.set()
+        self.stop_listening()
+        logger.info("Conversação interrompida")
     
     def set_personality(self, personality_prompt: str) -> None:
         """

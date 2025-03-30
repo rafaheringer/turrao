@@ -158,13 +158,40 @@ class ConversationManager:
                 
             # Tentar obter dados da fila de saída
             data = self.output_queue.get_nowait()
-            if len(data) < len(outdata):
-                outdata[:len(data)] = data
-                outdata[len(data):].fill(0)
+            
+            # Verificar dimensões dos dados e adaptar se necessário
+            data_array = np.frombuffer(data, dtype=np.int16 if isinstance(data, bytes) else np.float32)
+            
+            # Verificar se precisamos adaptar os canais
+            # outdata.shape[1] dá o número de canais do dispositivo de saída
+            if outdata.ndim == 2 and data_array.ndim == 1:
+                # Converter mono para o número de canais do dispositivo
+                data_array = np.tile(data_array.reshape(-1, 1), (1, outdata.shape[1]))
+            
+            # Redimensionar para o formato correto, se necessário
+            if len(data_array) < len(outdata.flat):
+                # Preencher com zeros onde não houver dados
+                outdata.fill(0)
+                if data_array.ndim == outdata.ndim:
+                    outdata[:len(data_array)] = data_array
+                else:
+                    # Lidar com diferença de dimensões
+                    outdata.flat[:len(data_array)] = data_array
             else:
-                outdata[:] = data[:len(outdata)]
+                # Truncar dados se for mais do que o necessário
+                if data_array.ndim == outdata.ndim:
+                    outdata[:] = data_array[:len(outdata)]
+                else:
+                    # Lidar com diferença de dimensões
+                    outdata.flat[:] = data_array.flat[:len(outdata.flat)]
+                    
         except queue.Empty:
             outdata.fill(0)  # Silêncio se não houver dados disponíveis
+        except Exception as e:
+            logger.error(f"Erro no callback de saída de áudio: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            outdata.fill(0)  # Em caso de erro, reproduzir silêncio
 
     class AudioInputStream:
         """Stream de entrada de áudio para a API Realtime."""
