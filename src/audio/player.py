@@ -2,28 +2,29 @@
 Módulo para reprodução de áudio através dos alto-falantes.
 
 Este módulo implementa a funcionalidade de reprodução de áudio usando sounddevice
-e outras bibliotecas de áudio modernas e compatíveis com Python 3.12.
+com foco em simplicidade e estabilidade.
 """
 
 import asyncio
 import io
-from typing import Any, Dict, Optional, Union
-
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+import wave
+import tempfile
+import os
+from typing import Any, Dict, Optional, Union
 
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
 
 class AudioPlayer:
     """
     Classe para reprodução de áudio através dos alto-falantes.
     
     Implementa a funcionalidade de reprodução de áudio usando sounddevice,
-    suportando diferentes formatos e taxas de amostragem.
+    com foco em estabilidade e qualidade.
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -32,34 +33,89 @@ class AudioPlayer:
         
         Args:
             config: Dicionário com configurações de áudio
-        
-        Raises:
-            RuntimeError: Se ocorrer erro na inicialização do dispositivo de áudio
         """
         self.config = config
-        self.sample_rate = config.get("AUDIO_SAMPLE_RATE", 16000)
-        self.channels = config.get("AUDIO_CHANNELS", 1)
-        self.chunk_size = config.get("AUDIO_CHUNK_SIZE", 1024)
+        self.sample_rate = config.get("sample_rate", 16000)
+        self.channels = config.get("output_channels", config.get("channels", 2))
         
-        # Mapeamento de formatos de áudio para numpy
-        format_map = {
-            "Int8": np.int8,
-            "Int16": np.int16,
-            "Int32": np.int32,
-            "Float32": np.float32
-        }
-        format_str = config.get("AUDIO_FORMAT", "Int16")
-        self.dtype = format_map.get(format_str, np.int16)
+        # Diretório temporário para arquivos de áudio
+        self.temp_dir = tempfile.mkdtemp(prefix="turrão_audio_")
         
-        # Verificar dispositivos disponíveis
+        # Contador para nomes de arquivos únicos
+        self.file_counter = 0
+        
+        # Flag para indicar se estamos reproduzindo áudio
+        self.is_playing = False
+        
+        # Configurar o dispositivo padrão
         try:
-            self.devices = sd.query_devices()
-            output_device = sd.default.device[1]
-            logger.debug(f"Dispositivo de saída padrão: {output_device}")
+            devices = sd.query_devices()
+            default_output = sd.default.device[1]
+            device_info = sd.query_devices(default_output)
+            
+            logger.info(f"Dispositivo de saída: {device_info['name']}")
+            logger.info(f"Taxa de amostragem suportada: {device_info['default_samplerate']}")
+            logger.info(f"Canais de saída: {device_info['max_output_channels']}")
+            
+            # Ajustar canais se necessário
+            if self.channels > device_info['max_output_channels']:
+                logger.warning(f"Ajustando canais para {device_info['max_output_channels']} (máximo suportado)")
+                self.channels = device_info['max_output_channels']
+            
             logger.debug("AudioPlayer inicializado com sucesso")
         except Exception as e:
-            logger.critical(f"Erro ao inicializar dispositivo de áudio: {e}")
-            raise RuntimeError(f"Falha na inicialização do dispositivo de áudio: {e}")
+            logger.error(f"Erro ao verificar dispositivos de áudio: {e}")
+    
+    async def write(self, audio_data: bytes) -> None:
+        """
+        Método para compatibilidade com a interface do RealtimeAgent.
+        Processa e reproduz o áudio recebido.
+        
+        Args:
+            audio_data: Dados de áudio em bytes
+        """
+        try:
+            # Gerar um arquivo temporário para o áudio
+            temp_file = os.path.join(self.temp_dir, f"audio_{self.file_counter}.wav")
+            self.file_counter += 1
+            
+            # Salvar os bytes como arquivo WAV
+            self._save_wav(audio_data, temp_file)
+            
+            # Reproduzir o arquivo
+            await self._play_file(temp_file)
+            
+            # Remover o arquivo temporário após reprodução
+            try:
+                os.remove(temp_file)
+            except:
+                pass  # Ignorar erros na remoção
+                
+        except Exception as e:
+            logger.error(f"Erro ao processar áudio: {e}")
+    
+    def _save_wav(self, audio_bytes: bytes, file_path: str) -> None:
+        """
+        Salva os bytes de áudio como um arquivo WAV.
+        
+        Args:
+            audio_bytes: Dados de áudio em bytes
+            file_path: Caminho para salvar o arquivo WAV
+        """
+        try:
+            # Converter para array numpy (assumindo PCM16, que é o formato padrão da OpenAI)
+            audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+            
+            # Se precisarmos de estéreo e temos mono
+            if self.channels > 1 and len(audio_data.shape) == 1:
+                # Duplicar o canal para estéreo
+                audio_data = np.column_stack([audio_data] * self.channels)
+            
+            # Salvar como WAV usando soundfile
+            sf.write(file_path, audio_data, self.sample_rate)
+        except Exception as e:
+            logger.error(f"Erro ao salvar arquivo WAV: {e}")
+            raise
     
     async def play(self, audio_data: Union[bytes, str]) -> None:
         """
@@ -67,101 +123,60 @@ class AudioPlayer:
         
         Args:
             audio_data: Dados de áudio como bytes ou caminho para um arquivo de áudio
-        
-        Raises:
-            RuntimeError: Se ocorrer erro durante a reprodução
-            ValueError: Se o formato de entrada for inválido
         """
         try:
             # Verificar se audio_data é um caminho para arquivo
             if isinstance(audio_data, str):
                 await self._play_file(audio_data)
             else:
-                await self._play_bytes(audio_data)
-                
+                # Para bytes, usamos o método write
+                await self.write(audio_data)
         except Exception as e:
             logger.error(f"Erro durante a reprodução de áudio: {e}")
-            raise RuntimeError(f"Falha na reprodução de áudio: {e}")
-    
-    async def _play_bytes(self, audio_data: bytes) -> None:
-        """
-        Reproduz dados de áudio em formato de bytes.
-        
-        Args:
-            audio_data: Dados de áudio em formato de bytes
-        """
-        try:
-            # Criar buffer de memória com os dados
-            buffer = io.BytesIO(audio_data)
-            
-            # Carregar os dados usando soundfile
-            data, samplerate = sf.read(buffer)
-            
-            # Reprodução usando sounddevice
-            # Usamos blocksize=0 para reprodução não-bloqueante e sem callback
-            await self._play_data(data, samplerate)
-            
-            logger.debug("Reprodução de áudio concluída")
-        except Exception as e:
-            logger.error(f"Erro na reprodução de áudio de bytes: {e}")
-            raise RuntimeError(f"Falha na reprodução de áudio: {e}")
     
     async def _play_file(self, file_path: str) -> None:
         """
-        Reproduz áudio a partir de um arquivo.
+        Reproduz áudio a partir de um arquivo usando método mais direto.
         
         Args:
             file_path: Caminho para o arquivo de áudio
-        
-        Raises:
-            FileNotFoundError: Se o arquivo não existir
         """
         try:
-            # Carregar o arquivo de áudio
-            data, samplerate = sf.read(file_path)
+            # Usar um player externo em vez de sounddevice, mais confiável em alguns sistemas
+            # Para Windows, usamos o comando 'start' que é não-bloqueante
+            import platform
+            if platform.system() == 'Windows':
+                cmd = f'start /min "" "{file_path}"'
+                os.system(cmd)
+                await asyncio.sleep(0.1)  # Pequena pausa não-bloqueante
+            else:
+                # Alternativa para não-Windows: usar sounddevice
+                data, sample_rate = sf.read(file_path)
+                sd.play(data, sample_rate)
+                await asyncio.sleep(0.1)  # Pequena pausa não-bloqueante
             
-            logger.debug(f"Reproduzindo arquivo {file_path}")
-            
-            # Reproduzir os dados
-            await self._play_data(data, samplerate)
-            
-            logger.debug("Reprodução do arquivo concluída")
-        except FileNotFoundError:
-            logger.error(f"Arquivo não encontrado: {file_path}")
-            raise FileNotFoundError(f"Arquivo de áudio não encontrado: {file_path}")
+            logger.debug(f"Reprodução do arquivo {file_path} iniciada")
         except Exception as e:
             logger.error(f"Erro ao reproduzir arquivo {file_path}: {e}")
-            raise RuntimeError(f"Falha ao reproduzir arquivo de áudio: {e}")
-    
-    async def _play_data(self, data: np.ndarray, samplerate: int) -> None:
-        """
-        Reproduz dados de áudio já carregados na memória.
-        
-        Args:
-            data: Array com os dados de áudio
-            samplerate: Taxa de amostragem dos dados
-        """
-        # Criar um evento para sinalizar quando a reprodução termina
-        finished = asyncio.Event()
-        
-        def callback(outdata, frames, time, status):
-            if status:
-                logger.warning(f"Status de áudio: {status}")
-        
-        # Reproduzir os dados
-        with sd.OutputStream(
-            samplerate=samplerate,
-            channels=data.shape[1] if len(data.shape) > 1 else 1,
-            callback=callback
-        ) as stream:
-            sd.play(data, samplerate=samplerate, blocking=False)
-            
-            # Verificar o status de reprodução periodicamente
-            while sd.get_stream().active:
-                await asyncio.sleep(0.1)  # Verificar a cada 100ms
     
     def close(self) -> None:
         """Fecha o reprodutor de áudio e libera recursos."""
-        # Não é necessário fechar o sounddevice explicitamente, 
-        # mas mantemos o método para compatibilidade
-        logger.debug("Recursos de áudio liberados")
+        try:
+            # Parar qualquer reprodução em andamento
+            sd.stop()
+            
+            # Limpar arquivos temporários
+            for file in os.listdir(self.temp_dir):
+                try:
+                    os.remove(os.path.join(self.temp_dir, file))
+                except:
+                    pass
+            
+            try:
+                os.rmdir(self.temp_dir)
+            except:
+                pass
+                
+            logger.debug("Recursos de áudio liberados")
+        except Exception as e:
+            logger.error(f"Erro ao liberar recursos de áudio: {e}")

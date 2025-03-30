@@ -157,36 +157,34 @@ class ConversationManager:
                 return
                 
             # Tentar obter dados da fila de saída
-            data = self.output_queue.get_nowait()
-            
-            # Verificar dimensões dos dados e adaptar se necessário
-            data_array = np.frombuffer(data, dtype=np.int16 if isinstance(data, bytes) else np.float32)
-            
-            # Verificar se precisamos adaptar os canais
-            # outdata.shape[1] dá o número de canais do dispositivo de saída
-            if outdata.ndim == 2 and data_array.ndim == 1:
-                # Converter mono para o número de canais do dispositivo
-                data_array = np.tile(data_array.reshape(-1, 1), (1, outdata.shape[1]))
-            
-            # Redimensionar para o formato correto, se necessário
-            if len(data_array) < len(outdata.flat):
-                # Preencher com zeros onde não houver dados
-                outdata.fill(0)
-                if data_array.ndim == outdata.ndim:
+            try:
+                data = self.output_queue.get_nowait()
+                
+                # Simplificando a conversão de dados para o formato correto
+                if isinstance(data, bytes):
+                    # Converter bytes para array NumPy
+                    dtype = np.int16  # PCM16 é o formato padrão da API Realtime
+                    data_array = np.frombuffer(data, dtype=dtype)
+                else:
+                    data_array = data
+                
+                # Verificar se precisamos adaptar os canais
+                if outdata.ndim == 2 and data_array.ndim == 1:
+                    # Converter mono para estéreo
+                    data_array = np.column_stack([data_array] * outdata.shape[1])
+                
+                # Redimensionar para o formato correto se necessário
+                if len(data_array) < len(outdata):
+                    # Preencher com zeros onde não houver dados
+                    outdata.fill(0)
                     outdata[:len(data_array)] = data_array
                 else:
-                    # Lidar com diferença de dimensões
-                    outdata.flat[:len(data_array)] = data_array
-            else:
-                # Truncar dados se for mais do que o necessário
-                if data_array.ndim == outdata.ndim:
+                    # Truncar dados se for mais do que o necessário
                     outdata[:] = data_array[:len(outdata)]
-                else:
-                    # Lidar com diferença de dimensões
-                    outdata.flat[:] = data_array.flat[:len(outdata.flat)]
-                    
-        except queue.Empty:
-            outdata.fill(0)  # Silêncio se não houver dados disponíveis
+            except queue.Empty:
+                # Se não houver dados, preencher com silêncio
+                outdata.fill(0)
+                
         except Exception as e:
             logger.error(f"Erro no callback de saída de áudio: {e}")
             import traceback
