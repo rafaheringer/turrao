@@ -1,0 +1,74 @@
+# Regras e Diretrizes do Projeto Turrão
+
+## Descrição do Projeto
+Turrão é um assistente pessoal conversacional inspirado na Alexa, que utiliza a API do ChatGPT para processamento de linguagem natural. O assistente tem personalidade forte, irreverente e humor ácido.
+
+## Objetivos
+- Criar uma POC em software simulando o fluxo de áudio
+- Implementar posteriormente no Raspberry Pi como dispositivo IoT
+
+## Estrutura de Pastas
+/src
+  /audio
+    - módulos de captura e reprodução de áudio
+    - processamento de áudio
+  /stt
+    - módulos de conversão de fala para texto
+  /tts
+    - módulos de conversão de texto para fala
+  /api
+    - integrações com a API do ChatGPT
+  /core
+    - lógica principal do assistente
+    - gerenciamento de estado e conversação
+  /utils
+    - utilitários e ferramentas comuns
+  /config
+    - arquivos de configuração
+/tests
+  - testes unitários e de integração
+/docs
+  - documentação do projeto
+/scripts
+  - scripts de automação e utilitários
+
+## Regras de Codificação
+- Usar Python 3.12
+- Seguir PEP 8 para estilo de código
+- Documentar todas as funções e classes
+- Implementar tratamento adequado de erros
+- Manter separação de responsabilidades entre camadas
+- Criar interfaces claras entre módulos
+- Usar programação assíncrona para operações de I/O
+- Implementar testes unitários para cada módulo
+
+## Fluxo de Processamento
+1. Captura de áudio do microfone
+2. Conversão de áudio para texto (STT)
+3. Processamento do texto pela API do ChatGPT
+4. Conversão da resposta de texto para áudio (TTS)
+5. Reprodução do áudio para o usuário
+
+## Personalidade do Assistente
+O Turrão tem personalidade forte, irreverente e humor ácido. É teimoso e responde com sarcasmo e ironia, mantendo um tom assertivo mas sempre com humor picante.
+
+## Considerações para Raspberry Pi
+- Otimizar o código para funcionar em hardware limitado
+- Considerar o consumo de energia e recursos
+- Testar com dispositivos de áudio compatíveis
+- Implementar mecanismos de recuperação de falhas
+
+## Documentação OpenSource
+- Todo o código deve ser extensivamente documentado
+- Manter comentários claros e explicativos em todas as funções
+- Criar e manter atualizada a documentação de APIs
+- Incluir exemplos de uso para as principais funcionalidades
+- Documentar decisões de arquitetura e design patterns utilizados
+- Adicionar diagramas e fluxogramas para facilitar o entendimento
+
+## Gerenciamento de Documentação
+- Atualizar o README.md sempre que houver mudanças significativas no projeto
+- Manter o checklist.md atualizado com o progresso do desenvolvimento
+- Utilizar docstrings para documentação de código seguindo padrões estabelecidos
+- Incluir instruções detalhadas para instalação, configuração e execução
+- Documentar todas as dependências externas e requisitos do sistema

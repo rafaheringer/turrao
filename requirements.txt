@@ -1,0 +1,34 @@
+# Ambiente e ferramentas
+python-dotenv==1.0.0  # Para gerenciamento de variáveis de ambiente
+black==23.3.0         # Formatador de código
+isort==5.12.0         # Ordenador de imports
+mypy==1.3.0           # Verificador de tipos estáticos
+pytest==7.3.1         # Framework de testes
+pytest-cov==4.1.0     # Cobertura de testes
+
+# Captura e processamento de áudio
+PyAudio==0.2.13       # Para captura e reprodução de áudio
+librosa==0.10.0       # Para processamento avançado de áudio
+sounddevice==0.4.6    # Interface para dispositivos de áudio
+soundfile==0.12.1     # Para leitura/escrita de arquivos de áudio
+pydub==0.25.1         # Manipulação de arquivos de áudio
+
+# Speech-to-Text e Text-to-Speech
+SpeechRecognition==3.10.0  # Framework para reconhecimento de fala
+gTTS==2.3.2           # Google Text-to-Speech API
+pyttsx3==2.90         # Motor TTS offline
+
+# Integração com APIs
+requests==2.29.0      # Cliente HTTP
+httpx==0.24.1         # Cliente HTTP assíncrono
+openai==1.3.0         # SDK oficial do OpenAI/ChatGPT
+anthropic==0.5.0      # SDK para modelo Claude (alternativa)
+
+# Utilitários
+tqdm==4.65.0          # Barras de progresso
+colorlog==6.7.0       # Logs coloridos
+pydantic==1.10.8      # Validação de dados
+
+# Documentação
+Sphinx==7.1.2         # Gerador de documentação
+sphinx-rtd-theme==1.2.0  # Tema ReadTheDocs para Sphinx
