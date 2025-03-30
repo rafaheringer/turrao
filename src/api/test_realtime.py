@@ -18,6 +18,9 @@ import json
 import logging
 from typing import List, Dict, Any
 
+# Adicionar o diretório raiz ao Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 # Configurar logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,6 +29,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("realtime_test")
+
+# Importar módulo de configuração
+from src.utils.config import load_config
+
+# Carregar configurações
+config = load_config()
 
 # Importar dependências
 try:
@@ -38,18 +47,18 @@ except ImportError as e:
     sys.exit(1)
 
 # Configurações de áudio
-CHUNK_SIZE = 4096
+CHUNK_SIZE = config["audio"]["chunk_size"]
 FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000  # Taxa de amostragem em Hz (16kHz para API Realtime)
+CHANNELS = config["audio"]["channels"]
+RATE = config["audio"]["sample_rate"]  # Taxa de amostragem em Hz
 RECORD_SECONDS = 5  # Tempo de gravação
 
 
 async def test_realtime_api():
     """Testa a API Realtime com áudio ao vivo."""
     try:
-        # Obter chave da API do ambiente ou solicitar ao usuário
-        api_key = os.environ.get("OPENAI_API_KEY")
+        # Obter chave da API da configuração
+        api_key = config["api"].get("api_key")
         if not api_key:
             api_key = input("Digite sua chave de API da OpenAI: ")
             if not api_key:
@@ -87,17 +96,24 @@ async def test_realtime_api():
         logger.info("Conectando à API Realtime")
         print("Conectando à API Realtime...")
         
-        async with client.beta.realtime.connect(model="gpt-4o-realtime-preview") as connection:
+        # Obter o modelo da configuração ou usar o padrão
+        model = config["api"].get("model", "gpt-4o-realtime-preview")
+        
+        async with client.beta.realtime.connect(model=model) as connection:
             logger.info("Conexão estabelecida com sucesso!")
             print("✅ Conexão estabelecida!")
+            
+            # Obter a personalidade do assistente da configuração
+            personality = config["assistant"].get("personality", 
+                "Você é o Turrão, um assistente pessoal com personalidade forte, "
+                "irreverente e humor ácido. Seja teimoso e responda com sarcasmo e ironia, "
+                "mantendo um tom assertivo mas sempre com humor picante.")
             
             # Configurar a sessão
             await connection.session.update(session={
                 'modalities': ['audio', 'text'],
-                'instructions': "Você é o Turrão, um assistente pessoal com personalidade forte, "
-                               "irreverente e humor ácido. Seja teimoso e responda com sarcasmo e ironia, "
-                               "mantendo um tom assertivo mas sempre com humor picante.",
-                'voice': 'alloy',
+                'instructions': personality,
+                'voice': config["tts"].get("voice", "alloy"),
                 'output_audio_format': 'pcm16',
                 'turn_detection': {
                     'type': 'server_vad',

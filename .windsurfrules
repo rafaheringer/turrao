@@ -8,29 +8,27 @@ Turrão é um assistente pessoal conversacional inspirado na Alexa, que utiliza 
 - Implementar posteriormente no Raspberry Pi como dispositivo IoT
 
 ## Estrutura de Pastas
-/src
-  /audio
-    - módulos de captura e reprodução de áudio
-    - processamento de áudio
-  /stt
-    - módulos de conversão de fala para texto
-  /tts
-    - módulos de conversão de texto para fala
-  /api
-    - integrações com a API do ChatGPT
-  /core
-    - lógica principal do assistente
-    - gerenciamento de estado e conversação
-  /utils
-    - utilitários e ferramentas comuns
-  /config
-    - arquivos de configuração
-/tests
-  - testes unitários e de integração
-/docs
-  - documentação do projeto
-/scripts
-  - scripts de automação e utilitários
+```
+/src   
+  /audio   
+    - módulos de captura e reprodução de áudio   
+    - processamento de áudio   
+  /api   
+    - integrações com a API do ChatGPT   
+  /core   
+    - lógica principal do assistente   
+    - gerenciamento de estado e conversação   
+  /utils   
+    - utilitários e ferramentas comuns   
+  /config   
+    - arquivos de configuração   
+/tests   
+  - testes unitários e de integração   
+/docs   
+  - documentação do projeto   
+/scripts   
+  - scripts de automação e utilitários   
+```
 
 ## Regras de Codificação
 - Usar Python 3.12
@@ -40,14 +38,12 @@ Turrão é um assistente pessoal conversacional inspirado na Alexa, que utiliza 
 - Manter separação de responsabilidades entre camadas
 - Criar interfaces claras entre módulos
 - Usar programação assíncrona para operações de I/O
-- Implementar testes unitários para cada módulo
+- Não chame diretamente os.environ. Use a classe load_config() de Utils/config.py
 
 ## Fluxo de Processamento
 1. Captura de áudio do microfone
-2. Conversão de áudio para texto (STT)
-3. Processamento do texto pela API do ChatGPT
-4. Conversão da resposta de texto para áudio (TTS)
-5. Reprodução do áudio para o usuário
+2. Processamento do texto pela API do ChatGPT
+3. Reprodução do áudio para o usuário
 
 ## Personalidade do Assistente
 O Turrão tem personalidade forte, irreverente e humor ácido. É teimoso e responde com sarcasmo e ironia, mantendo um tom assertivo mas sempre com humor picante.

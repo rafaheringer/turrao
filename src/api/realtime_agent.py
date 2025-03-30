@@ -38,6 +38,12 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger("realtime_agent")
 logger.setLevel(logging.INFO)  # Mantém INFO apenas para nosso módulo
 
+# Importar módulo de configuração
+from src.utils.config import load_config
+
+# Carregar configurações
+config = load_config()
+
 # Importar dependências
 try:
     import pyaudio
@@ -52,10 +58,10 @@ except ImportError as e:
 
 # Configurações
 FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000  # Taxa de amostragem para a captura
+CHANNELS = config["audio"]["channels"]
+RATE = config["audio"]["sample_rate"]  # Taxa de amostragem para a captura
 OUTPUT_RATE = 24000  # Taxa de amostragem para a reprodução da API OpenAI
-CHUNK_SIZE = 4096
+CHUNK_SIZE = config["audio"]["chunk_size"]
 RECORD_SECONDS = 5  # Tempo de gravação fixo em 5 segundos
 
 
@@ -95,10 +101,10 @@ async def process_audio_request():
     4. Reproduz o áudio completo de uma vez
     """
     try:
-        # Obter chave da API do ambiente
-        api_key = os.environ.get("OPENAI_API_KEY")
+        # Obter chave da API da configuração
+        api_key = config["api"].get("api_key")
         if not api_key:
-            logger.error("Chave de API da OpenAI não encontrada no ambiente")
+            logger.error("Chave de API da OpenAI não encontrada na configuração")
             return
         
         # Inicializar cliente OpenAI
@@ -136,15 +142,22 @@ async def process_audio_request():
         texto_resposta = ""
         all_audio_chunks = []  # Armazenar todos os chunks de áudio
         
-        async with client.beta.realtime.connect(model="gpt-4o-realtime-preview") as connection:
+        # Obter o modelo da configuração ou usar o padrão
+        model = config["api"].get("model", "gpt-4o-realtime-preview")
+        
+        async with client.beta.realtime.connect(model=model) as connection:
             print("Conexão estabelecida!")
+            
+            # Obter a personalidade do assistente da configuração
+            personality = config["assistant"].get("personality", 
+                "Você é o Turrão, um assistente com personalidade forte e irreverente. "
+                "Responda com humor ácido e sarcasmo.")
             
             # Configurar a sessão
             await connection.session.update(session={
                 'modalities': ['audio', 'text'],
-                'instructions': "Você é o Turrão, um assistente com personalidade forte e irreverente. "
-                               "Responda com humor ácido e sarcasmo.",
-                'voice': 'alloy',
+                'instructions': personality,
+                'voice': config["api"].get("voice", "alloy"),
                 'output_audio_format': 'pcm16'
             })
             
@@ -154,7 +167,7 @@ async def process_audio_request():
             print(f"Enviando áudio para a API...")
             chunk_size = 4096
             
-            # Converter lista de chunks em um único bytearray
+            # Convert audio_data (list of chunks) into a single bytearray for easier slicing
             audio_data_combined = bytearray(b''.join(audio_data))
             
             for i in range(0, len(audio_data_combined), chunk_size):

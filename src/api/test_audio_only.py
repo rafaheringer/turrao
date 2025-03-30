@@ -18,6 +18,9 @@ import traceback
 import io
 from pathlib import Path
 
+# Adicionar o diretório raiz ao Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 # Configurar logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,6 +29,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("audio_only_test")
+
+# Importar módulo de configuração
+from src.utils.config import load_config
+
+# Carregar configurações
+config = load_config()
 
 # Importar dependências
 try:
@@ -41,9 +50,9 @@ except ImportError as e:
 
 # Configurações
 FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000
-CHUNK_SIZE = 4096
+CHANNELS = config["audio"]["channels"]
+RATE = config["audio"]["sample_rate"]
+CHUNK_SIZE = config["audio"]["chunk_size"]
 RECORD_SECONDS = 3
 
 # Diretório para salvar os arquivos
@@ -91,8 +100,8 @@ async def play_audio(audio_bytes):
 async def test_audio_events():
     """Testa especificamente os eventos de áudio da API Realtime."""
     try:
-        # Obter chave da API do ambiente
-        api_key = os.environ.get("OPENAI_API_KEY")
+        # Obter chave da API da configuração
+        api_key = config["api"].get("api_key")
         if not api_key:
             api_key = input("Digite sua chave de API da OpenAI: ")
             if not api_key:
@@ -132,15 +141,22 @@ async def test_audio_events():
         # Lista para armazenar todos os eventos e dados de áudio
         all_audio_deltas = []
         
-        async with client.beta.realtime.connect(model="gpt-4o-realtime-preview") as connection:
+        # Obter o modelo da configuração ou usar o padrão
+        model = config["api"].get("model", "gpt-4o-realtime-preview")
+        
+        async with client.beta.realtime.connect(model=model) as connection:
             print("Conexão estabelecida!")
+            
+            # Obter a personalidade do assistente da configuração
+            personality = config["assistant"].get("personality", 
+                "Você é o Turrão, um assistente com personalidade forte e irreverente. "
+                "Responda com humor ácido. Diga 'TESTE DE ÁUDIO FUNCIONANDO' em algum momento da sua resposta.")
             
             # Configurar a sessão
             await connection.session.update(session={
                 'modalities': ['audio', 'text'],
-                'instructions': "Você é o Turrão, um assistente com personalidade forte e irreverente. "
-                               "Responda com humor ácido. Diga 'TESTE DE ÁUDIO FUNCIONANDO' em algum momento da sua resposta.",
-                'voice': 'alloy',
+                'instructions': personality,
+                'voice': config["tts"].get("voice", "alloy"),
                 'output_audio_format': 'pcm16'
             })
             

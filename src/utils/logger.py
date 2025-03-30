@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Importação condicional para colorlog
 try:
@@ -17,6 +17,43 @@ try:
     HAS_COLORLOG = True
 except ImportError:
     HAS_COLORLOG = False
+
+# Variável global para armazenar a configuração
+_config = None
+
+
+def _get_config() -> Dict[str, Any]:
+    """
+    Obtém a configuração, carregando-a sob demanda.
+    
+    Este método carrega a configuração apenas quando necessário,
+    evitando importação circular entre config.py e logger.py.
+    
+    Returns:
+        Dicionário com a configuração carregada
+    """
+    global _config
+    
+    if _config is None:
+        # Carregamento mínimo da configuração para evitar importação circular
+        # Usamos os valores do ambiente ou padrões
+        _config = {
+            "logging": {
+                "level": os.environ.get("LOG_LEVEL", "INFO").upper(),
+                "file": os.environ.get("LOG_FILE", None)
+            }
+        }
+        
+        # Tentar importar a configuração completa se disponível
+        try:
+            # Importar apenas quando necessário para evitar círculos
+            from src.utils.config import load_config
+            _config = load_config()
+        except (ImportError, Exception) as e:
+            # Falha silenciosa, usaremos a configuração mínima
+            pass
+    
+    return _config
 
 
 def setup_logger(
@@ -35,11 +72,23 @@ def setup_logger(
     Returns:
         Logger configurado
     """
-    # Obter nível de log do ambiente ou usar padrão
+    # Obter configuração
+    config = _get_config()
+    
+    # Obter nível de log da configuração, parâmetro ou usar padrão
     if not log_level:
-        log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+        # Verificar na configuração se existir a chave
+        if "logging" in config and "level" in config["logging"]:
+            log_level = config["logging"]["level"]
+        else:
+            # Fallback para variável de ambiente ou padrão
+            log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     
     numeric_level = getattr(logging, log_level, logging.INFO)
+    
+    # Obter arquivo de log da configuração ou parâmetro
+    if not log_file and "logging" in config and "file" in config["logging"]:
+        log_file = config["logging"]["file"]
     
     # Criar logger
     logger = logging.getLogger(name)

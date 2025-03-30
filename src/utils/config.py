@@ -135,20 +135,12 @@ def _override_with_env_vars(config: Dict[str, Any]) -> None:
         "AUDIO_CHANNELS": ("audio", "channels", int),
         "AUDIO_FORMAT": ("audio", "format", str),
         "AUDIO_CHUNK_SIZE": ("audio", "chunk_size", int),
-        
-        # STT
-        "STT_MODEL": ("stt", "model", str),
-        "STT_LANGUAGE": ("stt", "language", str),
-        
-        # TTS
-        "TTS_PROVIDER": ("tts", "provider", str),
-        "TTS_VOICE": ("tts", "voice", str),
-        "TTS_RATE": ("tts", "rate", float),
-        
+
         # API
         "OPENAI_API_KEY": ("api", "api_key", str),
         "OPENAI_MODEL": ("api", "model", str),
         "API_TEMPERATURE": ("api", "temperature", float),
+        "OPENAI_VOICE": ("api", "voice", str),
         
         # Assistente
         "ASSISTANT_NAME": ("assistant", "name", str),
