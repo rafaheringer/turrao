@@ -12,21 +12,18 @@ sounddevice==0.4.6    # Interface para dispositivos de áudio
 soundfile==0.12.1     # Para leitura/escrita de arquivos de áudio
 pydub==0.25.1         # Manipulação de arquivos de áudio
 
-# Speech-to-Text e Text-to-Speech
-SpeechRecognition==3.10.0  # Framework para reconhecimento de fala
-gTTS==2.3.2           # Google Text-to-Speech API
-pyttsx3==2.90         # Motor TTS offline
-
 # Integração com APIs
 requests==2.29.0      # Cliente HTTP
 httpx==0.24.1         # Cliente HTTP assíncrono
-openai==1.3.0         # SDK oficial do OpenAI/ChatGPT
-anthropic==0.5.0      # SDK para modelo Claude (alternativa)
+openai>=1.69.0        # SDK oficial do OpenAI com suporte à API Realtime
+websockets>=12.0      # Para comunicação WebSocket com a API Realtime
 
 # Utilitários
 tqdm==4.65.0          # Barras de progresso
 colorlog==6.7.0       # Logs coloridos
 pydantic==1.10.8      # Validação de dados
+asyncio==3.4.3        # Suporte a programação assíncrona
+aiofiles==23.2.1      # Operações assíncronas de arquivo
 
 # Documentação
 Sphinx==7.2.6         # Geração de documentação

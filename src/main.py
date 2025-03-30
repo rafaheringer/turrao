@@ -3,12 +3,8 @@
 Turrão - Assistente Pessoal Conversacional
 ------------------------------------------
 
-Aplicação principal que coordena o fluxo de processamento do assistente:
-1. Captura de áudio do microfone
-2. Conversão de áudio para texto (STT)
-3. Processamento do texto pela API do ChatGPT
-4. Conversão da resposta de texto para áudio (TTS)
-5. Reprodução do áudio para o usuário
+Aplicação principal que coordena o fluxo de processamento do assistente
+usando a API Realtime da OpenAI para comunicação bidirecional de voz.
 
 Este módulo implementa o ponto de entrada da aplicação e o loop principal de execução.
 """
@@ -28,9 +24,7 @@ try:
     # Importações internas do projeto
     from src.audio.recorder import AudioRecorder
     from src.audio.player import AudioPlayer
-    from src.stt.speech_to_text import SpeechToText
-    from src.tts.text_to_speech import TextToSpeech
-    from src.api.openai_client import OpenAIClient
+    from src.api.realtime_agent import RealtimeAgent
     from src.core.conversation_manager import ConversationManager
     from src.utils.config import load_config
 except ImportError as e:
@@ -41,7 +35,7 @@ except ImportError as e:
 class TurraoAssistant:
     """
     Classe principal do assistente Turrão que coordena todos os componentes
-    e implementa o loop principal de conversação.
+    e implementa o loop principal de conversação usando a API Realtime.
     """
     
     def __init__(self, config_path: Optional[str] = None):
@@ -67,11 +61,9 @@ class TurraoAssistant:
         try:
             self.audio_recorder = AudioRecorder(self.config["audio"])
             self.audio_player = AudioPlayer(self.config["audio"])
-            self.stt = SpeechToText(self.config["stt"])
-            self.tts = TextToSpeech(self.config["tts"])
-            self.openai_client = OpenAIClient(self.config["api"])
+            self.realtime_agent = RealtimeAgent(self.config["api"])
             self.conversation_manager = ConversationManager(
-                openai_client=self.openai_client,
+                realtime_agent=self.realtime_agent,
                 config=self.config["assistant"]
             )
             logger.debug("Todos os componentes foram inicializados com sucesso")
@@ -96,40 +88,46 @@ class TurraoAssistant:
         logger.info(f"Sinal {sig} recebido, encerrando...")
         self.stop()
     
+    async def on_speech_recognized(self, text: str) -> None:
+        """
+        Callback executado quando a fala do usuário é reconhecida.
+        
+        Args:
+            text: Texto reconhecido da fala do usuário
+        """
+        logger.info(f"Usuário: {text}")
+    
+    async def on_response_text(self, text: str) -> None:
+        """
+        Callback executado quando texto da resposta é recebido.
+        
+        Args:
+            text: Fragmento de texto da resposta
+        """
+        logger.info(f"Assistente: {text}")
+    
     async def conversation_loop(self) -> None:
-        """Loop principal de conversação assíncrona."""
+        """Loop principal de conversação assíncrona usando a API Realtime."""
         self.running = True
         
         # Mensagem de boas-vindas
         welcome_message = "Olá! Eu sou o Turrão, seu assistente pessoal. Como posso ajudar?"
         logger.info(f"Assistente: {welcome_message}")
         
-        # Convertendo boas-vindas em áudio e reproduzindo
-        welcome_audio = await self.tts.synthesize(welcome_message)
-        await self.audio_player.play(welcome_audio)
-        
         while self.running:
             try:
-                logger.info("Aguardando comando de voz...")
+                logger.info("Iniciando sessão de conversação em tempo real...")
                 
-                # Captura de áudio
-                audio_data = await self.audio_recorder.record()
+                # O ConversationManager agora gerencia o fluxo de conversação em tempo real
+                await self.conversation_manager.start_realtime_conversation(
+                    on_speech_recognized=self.on_speech_recognized,
+                    on_response_text=self.on_response_text
+                )
                 
-                # Conversão para texto
-                text = await self.stt.transcribe(audio_data)
-                if not text:
-                    logger.debug("Nenhum texto reconhecido, continuando...")
-                    continue
-                
-                logger.info(f"Usuário: {text}")
-                
-                # Processamento pela API do ChatGPT
-                response = await self.conversation_manager.process_input(text)
-                logger.info(f"Assistente: {response}")
-                
-                # Conversão para áudio e reprodução
-                response_audio = await self.tts.synthesize(response)
-                await self.audio_player.play(response_audio)
+                # Aguardar um breve momento antes de reiniciar caso a sessão seja encerrada
+                if self.running:
+                    logger.info("Sessão de conversação encerrada, reiniciando em 2 segundos...")
+                    await asyncio.sleep(2)
                 
             except KeyboardInterrupt:
                 self.stop()
@@ -141,7 +139,7 @@ class TurraoAssistant:
     def start(self) -> None:
         """Inicia o assistente e o loop de conversação."""
         try:
-            logger.info("Iniciando o assistente Turrão...")
+            logger.info("Iniciando o assistente Turrão com API Realtime...")
             asyncio.run(self.conversation_loop())
         except KeyboardInterrupt:
             pass

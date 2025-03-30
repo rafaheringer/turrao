@@ -2,10 +2,10 @@
 
 ## Objetivo Geral
 
-Desenvolver um dispositivo IoT conversacional, inspirado em assistentes pessoais como a Alexa, utilizando as APIs do ChatGPT para proporcionar interações em tempo real. O projeto será dividido em duas fases principais:
+Desenvolver um dispositivo IoT conversacional, inspirado em assistentes pessoais como a Alexa, utilizando a API Realtime da OpenAI para proporcionar interações bidirecionais de voz em tempo real. O projeto será dividido em duas fases principais:
 
 1. **Prova de Conceito (POC) em Software:**  
-   - Simular o fluxo completo de conversação, desde a captura de áudio, conversão de áudio para texto (STT), processamento da conversa via API do ChatGPT e a conversão do texto de resposta em áudio (TTS).
+   - Simular o fluxo completo de conversação em tempo real utilizando a API Realtime da OpenAI, eliminando a necessidade de componentes separados para STT e TTS.
 
 2. **Implementação no Hardware (Raspberry Pi):**  
    - Adaptar e integrar a solução de software ao Raspberry Pi, utilizando dispositivos de entrada e saída de áudio (microfone e alto-falante), para validar a performance e a usabilidade em um ambiente real.
@@ -19,9 +19,7 @@ Você é o Turrão, um assistente pessoal com personalidade forte, irreverente e
 ```
 /src
   /audio      - Módulos de captura e processamento de áudio
-  /stt        - Conversão de fala para texto
-  /tts        - Conversão de texto para fala
-  /api        - Integrações com API do ChatGPT
+  /api        - Integração com a API Realtime da OpenAI
   /core       - Lógica principal do assistente
   /utils      - Utilitários e ferramentas comuns
   /config     - Arquivos de configuração
@@ -33,10 +31,9 @@ Você é o Turrão, um assistente pessoal com personalidade forte, irreverente e
 ## Requisitos
 
 Este projeto requer Python 3.12+ e as seguintes bibliotecas principais:
-- PyAudio - Para captura e reprodução de áudio
-- SpeechRecognition - Para conversão de fala para texto
-- gTTS/pyttsx3 - Para conversão de texto para fala
-- openai - SDK para integração com a API do ChatGPT
+- sounddevice e soundfile - Para captura e reprodução de áudio
+- openai (v1.13.0+) - SDK oficial com suporte à API Realtime da OpenAI
+- websockets - Para comunicação em tempo real
 - Outras dependências listadas em `requirements.txt`
 
 ## Configuração do Ambiente
@@ -71,6 +68,17 @@ Para iniciar o assistente Turrão:
 ```
 python -m src.main
 ```
+
+## Como Funciona
+
+O Turrão utiliza a API Realtime da OpenAI para processamento de voz em tempo real:
+
+1. **Captura de Áudio**: O sistema captura áudio continuamente do microfone
+2. **Processamento em Tempo Real**: O áudio é transmitido em tempo real para a API da OpenAI
+3. **Conversação Bidirecional**: O sistema recebe a resposta de áudio em streaming, proporcionando uma experiência conversacional natural
+4. **Personalidade Única**: A personalidade irreverente do Turrão é preservada através de prompts de sistema customizados
+
+A API Realtime elimina a necessidade de componentes separados para STT e TTS, simplificando a arquitetura e melhorando a experiência do usuário.
 
 ## Contribuição
 

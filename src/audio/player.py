@@ -37,9 +37,9 @@ class AudioPlayer:
             RuntimeError: Se ocorrer erro na inicialização do dispositivo de áudio
         """
         self.config = config
-        self.sample_rate = config.get("sample_rate", 16000)
-        self.channels = config.get("channels", 1)
-        self.chunk_size = config.get("chunk_size", 1024)
+        self.sample_rate = config.get("AUDIO_SAMPLE_RATE", 16000)
+        self.channels = config.get("AUDIO_CHANNELS", 1)
+        self.chunk_size = config.get("AUDIO_CHUNK_SIZE", 1024)
         
         # Mapeamento de formatos de áudio para numpy
         format_map = {
@@ -48,7 +48,7 @@ class AudioPlayer:
             "Int32": np.int32,
             "Float32": np.float32
         }
-        format_str = config.get("format", "Int16")
+        format_str = config.get("AUDIO_FORMAT", "Int16")
         self.dtype = format_map.get(format_str, np.int16)
         
         # Verificar dispositivos disponíveis
