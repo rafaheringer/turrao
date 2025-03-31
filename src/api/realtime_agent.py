@@ -33,19 +33,6 @@ from src.utils.config import load_config
 # Configuração básica de logging
 logger = logging.getLogger(__name__)
 
-# Constantes para captura de áudio
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 24000  # Taxa de amostragem para API da OpenAI
-CHUNK_SIZE = 1024
-RECORD_SECONDS = 5  # Agora usado apenas como fallback
-
-# Constantes para a API
-API_URL = "wss://api.openai.com/v1/audio/speech"
-MODEL = "whisper-1"
-VOICE = "alloy"  # Vozes disponíveis: alloy, echo, fable, onyx, nova, shimmer
-
-
 async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dict[str, Any]:
     """
     Processa uma solicitação de áudio completa:
@@ -59,11 +46,13 @@ async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dic
     Returns:
         Dicionário com o resultado da operação
     """
-    # Instanciar o reprodutor de áudio em tempo real
-    audio_player = AudioPlayerRealtime(sample_rate=RATE)
-    
+
     # Obter a chave de API
     config = load_config()
+
+    # Instanciar o reprodutor de áudio em tempo real
+    audio_player = AudioPlayerRealtime(sample_rate=config.get("audio", {}).get("sample_rate", 24000))
+    
     api_key = config.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY"))
     
     if not api_key:
@@ -86,7 +75,7 @@ async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dic
     
     # Usar o gravador fornecido ou criar um novo
     if recorder is None:
-        recorder = SmartRecorder(sample_rate=RATE)
+        recorder = SmartRecorder(sample_rate=config.get("audio", {}).get("sample_rate", 24000))
         own_recorder = True
     
     # Iniciar gravação inteligente
@@ -105,7 +94,7 @@ async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dic
             return {}
             
         # Informações para debug
-        audio_duration = len(audio_data) / (RATE * CHANNELS * 2)  # Duração em segundos
+        audio_duration = len(audio_data) / (config.get("audio", {}).get("sample_rate", 24000) * config.get("audio", {}).get("channels", 1) * 2)  # Duração em segundos
         logger.debug(f"Áudio capturado: {len(audio_data)} bytes ({audio_duration:.2f}s)")
     
         print("Conectando à API Realtime...")
@@ -118,12 +107,15 @@ async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dic
             personality = config.get("assistant", {}).get("personality", 
                 "Você é o Turrão, um assistente com personalidade forte e irreverente. "
                 "Responda com humor ácido e sarcasmo.")
+
+            print(f"personalidade do assistente: {personality}")
+            print(f"voz do assistente: {config.get("assistant", {}).get("voice", "alloy")}")
             
             # Configurar a sessão
             await connection.session.update(session={
                 'modalities': ['audio', 'text'],
                 'instructions': personality,
-                'voice': 'alloy',  
+                'voice': config.get("assistant", {}).get("voice", "alloy"),  
                 'output_audio_format': 'pcm16'
             })
             print("Sessão configurada!")

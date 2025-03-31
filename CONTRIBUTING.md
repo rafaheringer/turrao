@@ -82,8 +82,6 @@ Antes de contribuir, familiarize-se com a estrutura de diretórios:
 ```
 /src
   /audio      - Módulos de captura e processamento de áudio
-  /stt        - Conversão de fala para texto
-  /tts        - Conversão de texto para fala
   /api        - Integrações com API do ChatGPT
   /core       - Lógica principal do assistente
   /utils      - Utilitários e ferramentas comuns

@@ -3,6 +3,7 @@ Módulo de configuração para o assistente Turrão.
 
 Este módulo é responsável por carregar e validar as configurações da aplicação
 a partir de arquivos de configuração e variáveis de ambiente.
+@TODO: Remover configuração padrão, não usar mais mapeamento de configuração e usar apenas variáveis de ambiente
 """
 
 import json
@@ -35,23 +36,13 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     # Configurações padrão
     config = {
         "audio": {
-            "sample_rate": 16000,
+            "sample_rate": 24000,
             "channels": 1,
             "format": "Int16",
             "chunk_size": 1024,
         },
-        "stt": {
-            "model": "default",
-            "language": "pt-BR"
-        },
-        "tts": {
-            "provider": "gTTS",
-            "voice": "pt-BR",
-            "rate": 1.0,
-        },
         "api": {
-            "provider": "openai",
-            "model": "gpt-4o",
+            "model": "gpt-4o-realtime-preview",
             "temperature": 0.7,
         },
         "assistant": {
@@ -64,6 +55,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 "o usuário de forma assertiva, mas sempre com um toque de humor "
                 "picante, que reflete seu temperamento único e ácido."
             ),
+            "voice": "verse",
             "max_history": 10
         }
     }
@@ -140,11 +132,12 @@ def _override_with_env_vars(config: Dict[str, Any]) -> None:
         "OPENAI_API_KEY": ("api", "api_key", str),
         "OPENAI_MODEL": ("api", "model", str),
         "API_TEMPERATURE": ("api", "temperature", float),
-        "OPENAI_VOICE": ("api", "voice", str),
         
         # Assistente
         "ASSISTANT_NAME": ("assistant", "name", str),
         "ASSISTANT_MAX_HISTORY": ("assistant", "max_history", int),
+        "ASSISTANT_VOICE": ("assistant", "voice", str),
+        "ASSISTANT_PERSONALITY": ("assistant", "personality", str),
     }
     
     for env_var, (section, key, type_func) in env_mappings.items():

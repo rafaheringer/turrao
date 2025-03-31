@@ -222,7 +222,7 @@ class AudioPlayerRealtime:
         
         # Aguardar a thread terminar (com timeout)
         if self.player_thread and self.player_thread.is_alive():
-            self.player_thread.join(timeout=2.0)
+            self.player_thread.join(timeout=0.1)
         
         # Fechar o stream se necessário
         if self.stream and self.stream.active:
