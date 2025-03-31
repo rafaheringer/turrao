@@ -152,6 +152,21 @@ async def process_audio_request():
             # Converter lista de chunks em um único bytearray para facilitar o fatiamento
             audio_data_combined = bytearray(b''.join(audio_data))
             
+            # Verificar se temos áudio suficiente (pelo menos 100ms)
+            min_bytes_needed = int(0.1 * RATE * 2)  # 100ms de áudio (taxa * 2 bytes por amostra * 0.1s)
+            if len(audio_data_combined) < min_bytes_needed:
+                print(f"Aviso: quantidade de áudio capturado pode ser insuficiente ({len(audio_data_combined)} bytes, mínimo recomendado: {min_bytes_needed} bytes)")
+                # Podemos adicionar silêncio para garantir o mínimo, mas neste caso vamos continuar mesmo assim
+            
+            # Verificar se já existe uma resposta ativa 
+            try:
+                # Tentar cancelar qualquer resposta ativa anterior
+                await connection.send({"type": "response.cancel"})
+                await asyncio.sleep(0.5)  # Pequena pausa para garantir que o cancelamento seja processado
+            except Exception as e:
+                # Ignorar erros de cancelamento - pode não haver resposta ativa para cancelar
+                logger.debug(f"Aviso ao cancelar resposta: {e}")
+                
             for i in range(0, len(audio_data_combined), chunk_size):
                 chunk = audio_data_combined[i:i+chunk_size]
                 base64_audio = base64.b64encode(chunk).decode('ascii')
@@ -177,6 +192,27 @@ async def process_audio_request():
                 
                 # Verificar erros
                 if event_type == "error":
+                    # Ignorar erros específicos que sabemos que não são críticos
+                    error_message = getattr(event, 'error', None)
+                    if error_message:
+                        error_code = getattr(error_message, 'code', '')
+                        
+                        # Ignorar erro de "conversation_already_has_active_response"
+                        if 'conversation_already_has_active_response' in str(error_code):
+                            logger.debug("Ignorando erro de resposta ativa já existente")
+                            continue
+                            
+                        # Ignorar erro de buffer muito pequeno se já enviamos todo o áudio
+                        if 'input_audio_buffer_commit_empty' in str(error_code):
+                            logger.debug("Ignorando erro de buffer vazio - já processamos o áudio disponível")
+                            continue
+                            
+                        # Ignorar erro de "sem resposta ativa para cancelar"
+                        if 'response_cancel_not_active' in str(error_code):
+                            logger.debug("Ignorando erro de cancelamento - não havia resposta ativa")
+                            continue
+                    
+                    # Exibir outros erros que podem ser importantes
                     print(f"Erro na API: ", end="")
                     if hasattr(event, 'error'):
                         print(f"{event.error}")
@@ -238,11 +274,27 @@ async def process_audio_request():
             print(f"\nTotal de eventos de áudio recebidos: {audio_delta_count} (Total: {total_audio_bytes} bytes)")
             
             # Garantir que todo o áudio tenha sido reproduzido
-            # Aguardar um pouco para que o buffer possa ser consumido completamente
             if audio_delta_count > 0:
                 print("Aguardando finalização da reprodução do áudio...")
-                while not audio_player.is_buffer_empty():
+                
+                # Adicionar timeout como segurança, mas usar o método mais confiável primeiro
+                max_wait_time = 30  # 30 segundos como tempo máximo de segurança
+                start_wait = time.time()
+                
+                # Usar o novo método mais confiável para detectar o fim da reprodução
+                while not audio_player.is_playing_complete() and (time.time() - start_wait < max_wait_time):
                     await asyncio.sleep(0.1)
+                    
+                    # Feedback periódico para mostrar que ainda está processando
+                    if (time.time() - start_wait) % 3 < 0.1:  # A cada ~3 segundos
+                        sys.stdout.write(".")
+                        sys.stdout.flush()
+                
+                # Se excedeu o timeout, avisar mas continuar
+                if time.time() - start_wait >= max_wait_time:
+                    print("\nTempo limite de segurança excedido. Finalizando mesmo assim.")
+                else:
+                    print("\nReprodução concluída com sucesso!")
             
             # Parar o reprodutor de áudio após a reprodução completa
             audio_player.stop_playback()
