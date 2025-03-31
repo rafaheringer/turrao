@@ -4,134 +4,118 @@
 """
 Cliente para comunicação com a API Realtime do OpenAI com reprodução em tempo real.
 
-Este módulo implementa um agente que:
-1. Grava áudio por um tempo fixo (5 segundos)
-2. Envia para a API Realtime
-3. Reproduz a resposta de áudio em tempo real, enquanto os chunks são recebidos
+Este módulo implementa um cliente que se comunica com a API Realtime do OpenAI,
+enviando áudio e recebendo a resposta em tempo real, para ser reproduzida à medida
+que os chunks são recebidos.
+
+Agora com gravação inteligente que detecta quando o usuário para de falar!
 """
 
 import asyncio
 import base64
+import json
+import logging
 import os
 import sys
 import time
-import logging
-import traceback
-from pathlib import Path
+from typing import Dict, List, Optional, Any, Callable
 
-# Adicionar o diretório raiz ao Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+# Importações de terceiros
+import numpy as np
+import pyaudio
+from openai import AsyncOpenAI
 
-# Configurar logging - Reduzido para WARNING para minimizar saída
-logging.basicConfig(
-    level=logging.WARNING,  # Alterado de INFO para WARNING para reduzir ainda mais os logs
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-
-# Configurar logging para outros módulos
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-
-logger = logging.getLogger("realtime_agent")
-logger.setLevel(logging.INFO)  # Mantém INFO apenas para nosso módulo
-
-# Importar módulo de configuração
+# Importação do reprodutor de áudio em tempo real
+from src.audio.player_realtime import AudioPlayerRealtime
+from src.audio.smart_recorder import SmartRecorder
 from src.utils.config import load_config
 
-# Carregar configurações
-config = load_config()
+# Configuração básica de logging
+logger = logging.getLogger(__name__)
 
-# Importar dependências
-try:
-    import pyaudio
-    import numpy as np
-    import sounddevice as sd
-    import soundfile as sf
-    from openai import AsyncOpenAI
-    
-    # Importar nosso reprodutor de áudio em tempo real
-    from src.audio.player_realtime import AudioPlayerRealtime
-except ImportError as e:
-    logger.error(f"Erro ao importar bibliotecas: {e}")
-    logger.error("Instale as dependências com: pip install pyaudio numpy openai sounddevice soundfile")
-    sys.exit(1)
-
-# Configurações
+# Constantes para captura de áudio
 FORMAT = pyaudio.paInt16
-CHANNELS = config["audio"]["channels"]
-RATE = config["audio"]["sample_rate"]  # Taxa de amostragem para a captura
-OUTPUT_RATE = 24000  # Taxa de amostragem para a reprodução da API OpenAI
-CHUNK_SIZE = config["audio"]["chunk_size"]
-RECORD_SECONDS = 5  # Tempo de gravação fixo em 5 segundos
+CHANNELS = 1
+RATE = 24000  # Taxa de amostragem para API da OpenAI
+CHUNK_SIZE = 1024
+RECORD_SECONDS = 5  # Agora usado apenas como fallback
+
+# Constantes para a API
+API_URL = "wss://api.openai.com/v1/audio/speech"
+MODEL = "whisper-1"
+VOICE = "alloy"  # Vozes disponíveis: alloy, echo, fable, onyx, nova, shimmer
 
 
-async def process_audio_request():
+async def process_audio_request(recorder: Optional[SmartRecorder] = None) -> Dict[str, Any]:
     """
     Processa uma solicitação de áudio completa:
-    1. Grava áudio do microfone por um tempo fixo
+    1. Grava áudio do microfone com detecção inteligente de silêncio
     2. Envia para a API Realtime
     3. Reproduz a resposta em tempo real conforme os chunks são recebidos
+    
+    Args:
+        recorder: Instância do SmartRecorder já calibrada (opcional)
+    
+    Returns:
+        Dicionário com o resultado da operação
     """
+    # Instanciar o reprodutor de áudio em tempo real
+    audio_player = AudioPlayerRealtime(sample_rate=RATE)
+    
+    # Obter a chave de API
+    config = load_config()
+    api_key = config.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY"))
+    
+    if not api_key:
+        logger.error("Chave de API da OpenAI não encontrada na configuração")
+        return {}
+    
+    # Inicializar cliente OpenAI
+    client = AsyncOpenAI(api_key=api_key)
+    
+    # Inicializar o gravador inteligente ou usar o passado por parâmetro
+    audio_buffer = bytearray()
+    recording_completed = asyncio.Event()
+    own_recorder = False
+    
+    # Callback quando a gravação for concluída
+    def on_recording_complete(audio_data: bytes):
+        nonlocal audio_buffer
+        audio_buffer.extend(audio_data)
+        recording_completed.set()
+    
+    # Usar o gravador fornecido ou criar um novo
+    if recorder is None:
+        recorder = SmartRecorder(sample_rate=RATE)
+        own_recorder = True
+    
+    # Iniciar gravação inteligente
+    recorder.start_recording(on_recording_complete)
+    
     try:
-        # Obter chave da API da configuração
-        api_key = config["api"].get("api_key")
-        if not api_key:
-            logger.error("Chave de API da OpenAI não encontrada na configuração")
-            return
+        # Aguardar até que a gravação seja concluída
+        await recording_completed.wait()
         
-        # Inicializar cliente OpenAI
-        client = AsyncOpenAI(api_key=api_key)
+        # Converter para bytes
+        audio_data = bytes(audio_buffer)
         
-        # Inicializar PyAudio para captura
-        audio = pyaudio.PyAudio()
-        stream_in = audio.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
-            frames_per_buffer=CHUNK_SIZE
-        )
-        
-        # Capturar alguns segundos de áudio
-        print(f"Gravando áudio por {RECORD_SECONDS} segundos...")
-        audio_data = []
-        for _ in range(0, int(RATE / CHUNK_SIZE * RECORD_SECONDS)):
-            data = stream_in.read(CHUNK_SIZE, exception_on_overflow=False)
-            audio_data.append(data)
-            sys.stdout.write(".")
-            sys.stdout.flush()
-        print("\nGravação concluída!")
-        
-        # Fechar stream de entrada
-        stream_in.stop_stream()
-        stream_in.close()
-        audio.terminate()
-        
-        # Conectar à API Realtime
+        # Verificar se temos dados de áudio
+        if len(audio_data) == 0:
+            logger.error("Nenhum dado de áudio foi capturado")
+            return {}
+            
+        # Informações para debug
+        audio_duration = len(audio_data) / (RATE * CHANNELS * 2)  # Duração em segundos
+        logger.debug(f"Áudio capturado: {len(audio_data)} bytes ({audio_duration:.2f}s)")
+    
         print("Conectando à API Realtime...")
         
-        # Armazenar a resposta
-        texto_resposta = ""
-        
-        # Inicializar o reprodutor de áudio em tempo real
-        audio_player = AudioPlayerRealtime(sample_rate=OUTPUT_RATE, channels=CHANNELS)
-        
-        # Variáveis para controle e estatísticas
-        audio_delta_count = 0
-        total_audio_bytes = 0
-        last_audio_item_id = None
-        
-        # Obter o modelo da configuração ou usar o padrão
-        model = config["api"].get("model", "gpt-4o-realtime-preview")
-        
-        async with client.beta.realtime.connect(model=model) as connection:
+        # Conectar à API
+        async with client.beta.realtime.connect(model="gpt-4o-realtime-preview") as connection:
             print("Conexão estabelecida!")
             
             # Obter a personalidade do assistente da configuração
-            personality = config["assistant"].get("personality", 
+            personality = config.get("assistant", {}).get("personality", 
                 "Você é o Turrão, um assistente com personalidade forte e irreverente. "
                 "Responda com humor ácido e sarcasmo.")
             
@@ -142,21 +126,14 @@ async def process_audio_request():
                 'voice': 'alloy',  
                 'output_audio_format': 'pcm16'
             })
-            
             print("Sessão configurada!")
             
-            # Enviar o áudio gravado anteriormente em chunks
-            print(f"Enviando áudio para a API...")
+            # Dividir o audio em chunks menores para envio
             chunk_size = 4096
+            audio_chunks = [audio_data[i:i+chunk_size] for i in range(0, len(audio_data), chunk_size)]
+            total_chunks = len(audio_chunks)
             
-            # Converter lista de chunks em um único bytearray para facilitar o fatiamento
-            audio_data_combined = bytearray(b''.join(audio_data))
-            
-            # Verificar se temos áudio suficiente (pelo menos 100ms)
-            min_bytes_needed = int(0.1 * RATE * 2)  # 100ms de áudio (taxa * 2 bytes por amostra * 0.1s)
-            if len(audio_data_combined) < min_bytes_needed:
-                print(f"Aviso: quantidade de áudio capturado pode ser insuficiente ({len(audio_data_combined)} bytes, mínimo recomendado: {min_bytes_needed} bytes)")
-                # Podemos adicionar silêncio para garantir o mínimo, mas neste caso vamos continuar mesmo assim
+            print("Enviando áudio para a API...")
             
             # Verificar se já existe uma resposta ativa 
             try:
@@ -167,16 +144,18 @@ async def process_audio_request():
                 # Ignorar erros de cancelamento - pode não haver resposta ativa para cancelar
                 logger.debug(f"Aviso ao cancelar resposta: {e}")
                 
-            for i in range(0, len(audio_data_combined), chunk_size):
-                chunk = audio_data_combined[i:i+chunk_size]
+            # Enviar chunks de áudio para a API
+            for i, chunk in enumerate(audio_chunks):
                 base64_audio = base64.b64encode(chunk).decode('ascii')
                 
                 await connection.send({
                     "type": "input_audio_buffer.append",
                     "audio": base64_audio
                 })
-                sys.stdout.write(".")
-                sys.stdout.flush()
+                
+                if i % 10 == 0 or i == total_chunks - 1:
+                    sys.stdout.write(".")
+                    sys.stdout.flush()
             
             # Finalizar entrada de áudio
             await connection.send({"type": "input_audio_buffer.commit"})
@@ -184,10 +163,21 @@ async def process_audio_request():
             
             # Solicitar resposta
             await connection.send({"type": "response.create"})
-            print("Aguardando resposta...\n")
+            print("Aguardando resposta...")
             
-            # Processar eventos
+            # Contadores para estatísticas
+            event_count = 0
+            audio_delta_count = 0
+            text_delta_count = 0
+            total_audio_bytes = 0
+            text_response = ""
+            last_audio_item_id = None
+            
+            # Processar eventos da resposta
             async for event in connection:
+                event_count += 1
+                
+                # Processa cada tipo de evento
                 event_type = getattr(event, 'type', None)
                 
                 # Verificar erros
@@ -213,16 +203,14 @@ async def process_audio_request():
                             continue
                     
                     # Exibir outros erros que podem ser importantes
-                    print(f"Erro na API: ", end="")
-                    if hasattr(event, 'error'):
-                        print(f"{event.error}")
+                    logger.error(f"Erro na API: {error_message}")
                     continue
                 
                 # Processar eventos de texto
                 if event_type == "response.text.delta":
+                    text_delta_count += 1
                     if hasattr(event, 'delta'):
-                        texto_resposta += event.delta
-                        print(event.delta, end="", flush=True)
+                        text_response += event.delta
                 
                 # Processar especificamente os eventos de áudio delta
                 elif event_type == "response.audio.delta":
@@ -246,30 +234,27 @@ async def process_audio_request():
                             continue
                             
                         # Decodificar os dados de Base64
-                        audio_bytes = base64.b64decode(audio_base64)
+                        chunk_data = base64.b64decode(audio_base64)
                         
                         # Pular chunks vazios
-                        if len(audio_bytes) == 0:
+                        if len(chunk_data) == 0:
                             continue
                         
                         # Adicionar o chunk ao reprodutor de áudio em tempo real
-                        audio_player.add_audio_chunk(audio_bytes)
+                        audio_player.add_audio_chunk(chunk_data)
                         
                         # Estatísticas
-                        total_audio_bytes += len(audio_bytes)
-                        
-                        # Visual feedback para mostrar que estamos recebendo áudio
-                        if audio_delta_count % 5 == 0:  # Mostrar indicador a cada 5 chunks
-                            sys.stdout.write("")
-                            sys.stdout.flush()
+                        total_audio_bytes += len(chunk_data)
                         
                     except Exception as e:
                         logger.error(f"Erro ao processar áudio: {e}")
                 
                 # Finalização da resposta
                 elif event_type == "response.done":
-                    print("\n\nResposta concluída!")
+                    logger.debug("Evento final recebido.")
                     break
+            
+            print("\nResposta concluída!")
             
             print(f"\nTotal de eventos de áudio recebidos: {audio_delta_count} (Total: {total_audio_bytes} bytes)")
             
@@ -277,11 +262,10 @@ async def process_audio_request():
             if audio_delta_count > 0:
                 print("Aguardando finalização da reprodução do áudio...")
                 
-                # Adicionar timeout como segurança, mas usar o método mais confiável primeiro
+                # Usar o novo método mais confiável para detectar o fim da reprodução
                 max_wait_time = 30  # 30 segundos como tempo máximo de segurança
                 start_wait = time.time()
                 
-                # Usar o novo método mais confiável para detectar o fim da reprodução
                 while not audio_player.is_playing_complete() and (time.time() - start_wait < max_wait_time):
                     await asyncio.sleep(0.1)
                     
@@ -299,26 +283,65 @@ async def process_audio_request():
             # Parar o reprodutor de áudio após a reprodução completa
             audio_player.stop_playback()
             
+            # Retornar informações sobre a operação
             return {
-                'text_response': texto_resposta
+                "success": True,
+                "audio_events": audio_delta_count,
+                "text_events": text_delta_count,
+                "total_audio_bytes": total_audio_bytes,
+                "text_response": text_response
             }
     
     except Exception as e:
-        logger.error(f"Erro durante o processamento: {e}")
-        logger.error(traceback.format_exc())
-        print(f"\nErro: {e}")
-        return None
+        logger.error(f"Erro no processamento do áudio: {str(e)}")
+        # Capturar e tratar erros específicos
+        error_msg = str(e).lower()
+        
+        # Tentar cancelar a resposta (ignorar erros)
+        try:
+            if 'connection' in locals():
+                await connection.send({"type": "response.cancel"})
+        except Exception as cancel_error:
+            # Ignorar especificamente erros de "no active response found"
+            if "no active response found" in str(cancel_error).lower():
+                logger.debug("Ignorando erro ao cancelar resposta (não há resposta ativa).")
+            else:
+                logger.error(f"Erro ao cancelar resposta: {cancel_error}")
+        
+        # Sempre parar o reprodutor de áudio em caso de erro
+        if 'audio_player' in locals():
+            audio_player.stop_playback()
+            
+        return {
+            "success": False,
+            "error": str(e)
+        }
+    finally:
+        # Parar o gravador apenas se foi criado aqui
+        if own_recorder and 'recorder' in locals():
+            recorder.stop_recording()
 
 
-# Função principal para ser chamada de main.py
-async def run_agent():
-    """Função principal para executar o agente de voz"""
-    print("=== AGENTE DE VOZ COM REPRODUÇÃO EM TEMPO REAL ===")
-    print(f"Este agente vai gravar {RECORD_SECONDS} segundos de áudio e enviar para a API.")
+async def run_agent(recorder: Optional[SmartRecorder] = None) -> Dict[str, Any]:
+    """
+    Função principal para executar o agente de voz.
     
-    resultado = await process_audio_request()
-    if resultado:
-        return resultado
-    else:
-        logger.error("Falha ao processar solicitação de áudio")
+    Esta função executa todo o ciclo de uma interação com o assistente:
+    1. Captura áudio inteligentemente do microfone até detectar silêncio
+    2. Envia para a API Realtime da OpenAI
+    3. Reproduz a resposta em tempo real
+    
+    Args:
+        recorder: Instância do SmartRecorder já calibrada (opcional)
+    
+    Returns:
+        Dicionário com o resultado da operação
+    """
+    print("=== AGENTE DE VOZ COM REPRODUÇÃO EM TEMPO REAL ===")
+    print("Este agente vai gravar seu áudio até você parar de falar e enviar para a API.")
+    
+    try:
+        return await process_audio_request(recorder)
+    except Exception as e:
+        logger.error(f"Erro ao executar o agente: {e}")
         return None

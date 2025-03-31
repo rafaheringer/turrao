@@ -17,37 +17,6 @@ def get_raspberry_pi_config() -> Dict[str, Any]:
         Dicionário com configurações para o Raspberry Pi
     """
     config = {
-        "audio": {
-            "sample_rate": 16000,  # Taxa de amostragem reduzida para economizar processamento
-            "channels": 1,  # Mono para reduzir uso de memória
-            "format": "Int16",
-            "chunk_size": 1024,
-            "device_index": 0,  # Índice do dispositivo de áudio (ajustar conforme necessário)
-            # Valores específicos para detecção de silêncio no RPi
-            "silence_threshold": 500,
-            "silence_duration": 1.5,
-        },
-        "stt": {
-            "model": "whisper",  # Whisper é boa opção para processamento local
-            "language": "pt-BR",
-            # Whisper pode rodar localmente no Raspberry Pi 4 com algumas otimizações
-            "use_local_model": True,
-            "local_model_size": "tiny",  # Modelo menor para o RPi
-        },
-        "tts": {
-            "provider": "pyttsx3",  # Preferir TTS offline para o RPi
-            "voice": "pt-BR",
-            "rate": 1.0,
-        },
-        "api": {
-            "provider": "openai",
-            "model": "gpt-3.5-turbo",  # Modelo mais leve para menor latência
-            "temperature": 0.7,
-            "max_tokens": 500,  # Reduzir tokens para respostas mais concisas
-            # Configurações de retry para lidar com conexões instáveis
-            "max_retries": 3,
-            "retry_delay": 2,
-        },
         "system": {
             # Configurações específicas de hardware
             "cpu_limit": 80,  # Limite de uso de CPU em porcentagem

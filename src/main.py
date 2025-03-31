@@ -37,6 +37,7 @@ try:
     
     # Importar o detector de voz
     from src.audio.voice_detector import VoiceDetector
+    from src.audio.smart_recorder import SmartRecorder
     
     # Carregar configurações
     config = load_config()
@@ -59,6 +60,12 @@ async def main_async():
     # Sinalizadores e eventos para controle do fluxo
     exit_requested = False
     voice_detected_event = asyncio.Event()
+    
+    # Inicializar o SmartRecorder para o programa inteiro (para preservar calibração)
+    print("Realizando calibração inicial do microfone (silêncio, por favor)...")
+    global_recorder = SmartRecorder(sample_rate=16000)
+    global_recorder.calibrate_microphone()  # Fazer calibração apenas uma vez
+    print("Calibração concluída. Sistema pronto para conversas!")
     
     # Inicializar o detector de voz
     voice_detector = VoiceDetector()
@@ -112,10 +119,10 @@ async def main_async():
                     break
                 
                 # Se chegou aqui, uma voz foi detectada
-                print(f"\nVoz detectada! Gravando áudio por 5 segundos (rodada #{conversation_turn})...")
+                print(f"\nVoz detectada! Iniciando captura de fala (rodada #{conversation_turn})...")
                 
-                # Executar o agente com reprodução em tempo real
-                resultado = await run_agent()
+                # Executar o agente com reprodução em tempo real, passando o gravador global calibrado
+                resultado = await run_agent(global_recorder)
                 
                 if resultado:
                     # Adicionar à história da conversa (para futura implementação de contexto)
