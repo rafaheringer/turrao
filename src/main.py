@@ -102,25 +102,41 @@ async def main_async():
     keyboard_task = asyncio.create_task(check_keyboard_input())
     
     try:
+        # Flag para controlar se é a primeira rodada
+        is_first_round = True
+        
         while not exit_requested:
             print("\n" + "=" * 50)
             print(f"RODADA #{conversation_turn}")
-            print("Aguardando você começar a falar... (diga algo ou digite 'sair' para encerrar)")
             
-            # Limpar o evento de voz detectada
-            voice_detected_event.clear()
-            
-            # Aguardar até que uma voz seja detectada ou o usuário solicite sair
-            try:
-                # Esperar até que uma voz seja detectada ou o programa seja encerrado
-                await asyncio.wait_for(voice_detected_event.wait(), timeout=None)
+            # Na primeira rodada, aguardamos a detecção inicial de voz
+            # Nas rodadas subsequentes, vamos direto para o agente
+            if is_first_round:
+                print("Aguardando você começar a falar... (diga algo ou digite 'sair' para encerrar)")
                 
-                if exit_requested:
+                # Limpar o evento de voz detectada
+                voice_detected_event.clear()
+                
+                # Aguardar até que uma voz seja detectada ou o usuário solicite sair
+                try:
+                    # Esperar até que uma voz seja detectada ou o programa seja encerrado
+                    await asyncio.wait_for(voice_detected_event.wait(), timeout=None)
+                    
+                    if exit_requested:
+                        break
+                    
+                    # Se chegou aqui, uma voz foi detectada
+                    print(f"\nVoz detectada! Iniciando captura de fala (rodada #{conversation_turn})...")
+                    
+                    # Marcar que não é mais a primeira rodada
+                    is_first_round = False
+                except asyncio.CancelledError:
                     break
-                
-                # Se chegou aqui, uma voz foi detectada
-                print(f"\nVoz detectada! Iniciando captura de fala (rodada #{conversation_turn})...")
-                
+            else:
+                # Nas rodadas subsequentes, vamos direto para o agente sem aguardar detecção de voz
+                print("Iniciando nova rodada de conversa...")
+            
+            try:
                 # Executar o agente com reprodução em tempo real, passando o gravador global calibrado
                 resultado = await run_agent(global_recorder)
                 
